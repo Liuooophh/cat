@@ -66,4 +66,3 @@ py -m unittest discover -s tests -v
 ```
 
 `tests\test_pet_core.py` 检查台词、防重复与点击升级、低频和系统状态反应、天气数据解析、CPU 采样、待机大笑优先与姿势淡化、PNG 帧、底边残线、大小范围和气泡淡入淡出。
-

@@ -1,0 +1,25 @@
+# Local credentials and settings
+.env
+.env.*
+*.pem
+*.key
+auth.json
+credentials.json
+settings.json
+tokens.json
+
+# Python and packaging output
+__pycache__/
+*.py[cod]
+/build/
+/dist/
+*.exe
+*.pkg
+*.zip
+*.spec
+
+# Local editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
