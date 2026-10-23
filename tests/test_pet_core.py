@@ -5,6 +5,7 @@ from datetime import datetime
 from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from PIL import Image, ImageDraw
@@ -29,63 +30,79 @@ APP_LOADER.exec_module(APP_MODULE)
 
 
 class DialogueTests(unittest.TestCase):
-    def test_dialogue_bank_has_requested_original_line_counts(self) -> None:
-        expected = {
-            "idle": 10, "happy": 8, "angry": 8, "laugh": 6, "yawn": 6,
-            "sleep": 6, "clicked": 12, "surprised": 6, "confused": 6,
-            "wave": 5, "interaction": 8,
-        }
-        self.assertEqual({key: len(DIALOGUE[key]) for key in expected}, expected)
-        self.assertEqual(sum(len(DIALOGUE[key]) for key in expected), 81)
+    def test_dialogue_keeps_ambient_actions_silent_and_cat_responses_brief(self) -> None:
+        for category in ("idle", "walk", "groom", "sleep", "yawn"):
+            self.assertIn(category, DIALOGUE)
+            self.assertEqual(DIALOGUE[category], [])
+        for category in ("clicked", "wake", "wave", "interaction"):
+            self.assertTrue(DIALOGUE[category])
+            self.assertTrue(all(line in {"喵。", "呼噜……"} for line in DIALOGUE[category]))
+        for category in ("weather_rain", "weather_snow", "weather_storm", "weather_hot", "cpu", "time"):
+            self.assertTrue(DIALOGUE[category])
+            self.assertTrue(all(len(line) <= 18 for line in DIALOGUE[category]))
 
     def test_dialogue_avoids_immediate_repeat_and_sets_duration(self) -> None:
         manager = DialogueManager()
-        first = manager.choose("idle", now=10)
-        second = manager.choose("idle", now=11, force=True)
+        first = manager.choose("clicked", now=10)
+        second = manager.choose("clicked", now=11, force=True)
         self.assertIsNotNone(first)
         self.assertIsNotNone(second)
         self.assertNotEqual(first[0], second[0])
-        self.assertGreaterEqual(first[1], 2.3)
-        self.assertLessEqual(first[1], 4.8)
+        self.assertGreaterEqual(first[1], 1.8)
+        self.assertLessEqual(first[1], 4.0)
 
 
 class BehaviorTests(unittest.TestCase):
-    def test_fifth_fast_click_triggers_anger_and_cooldown(self) -> None:
+    def test_fifth_fast_click_returns_to_idle_and_stays_quiet_during_cooldown(self) -> None:
         manager = PetBehaviorManager()
         with patch("pet_behavior.random.random", return_value=0.0):
             outcomes = [manager.click(now=10 + index * 0.4) for index in range(5)]
         self.assertIsNotNone(outcomes[-1])
-        self.assertEqual(outcomes[-1].state, "angry")
+        self.assertEqual((outcomes[-1].state, outcomes[-1].dialogue), ("idle", ""))
+        self.assertFalse(any(action is not None and action.state == "angry" for action in outcomes))
         self.assertIsNone(manager.click(now=12.1))
+        self.assertEqual(manager.last_activity, 12.1)
 
     def test_ambient_actions_wait_for_idle_and_jittered_check(self) -> None:
         manager = PetBehaviorManager()
+        now = manager.last_activity + 10
+        manager.next_autonomous_check = now + 1
+        self.assertIsNone(manager.autonomous_action(now=now))
         manager.next_autonomous_check = 0
         with patch("pet_behavior.random.random", return_value=0.0):
-            action = manager.autonomous_action(now=100)
+            action = manager.autonomous_action(now=now)
         self.assertIsNotNone(action)
-        self.assertEqual(action.state, "idle")
-        self.assertGreater(manager.next_autonomous_check, 100)
+        self.assertEqual((action.state, action.dialogue), ("groom", ""))
+        self.assertGreaterEqual(manager.next_autonomous_check, now + 30)
+        self.assertLessEqual(manager.next_autonomous_check, now + 70)
         manager.state = "sleep"
-        manager.state_until = 500
-        self.assertIsNone(manager.autonomous_action(now=101))
+        manager.state_until = now + 500
+        self.assertIsNone(manager.autonomous_action(now=now + 100))
 
     def test_autonomous_walk_and_long_idle_sleep_are_reachable(self) -> None:
         manager = PetBehaviorManager()
         manager.next_autonomous_check = 0
         now = manager.last_activity + 10
-        with patch("pet_behavior.random.random", return_value=0.34):
+        with patch("pet_behavior.random.random", return_value=0.10):
             walking = manager.autonomous_action(now=now)
         self.assertIsNotNone(walking)
         self.assertEqual(walking.state, "walk")
+        self.assertEqual(walking.dialogue, "")
+        self.assertGreaterEqual(walking.duration, 4)
+        self.assertLessEqual(walking.duration, 8)
 
         manager = PetBehaviorManager()
         manager.last_activity = 0
         manager.next_autonomous_check = 0
         with patch("pet_behavior.random.random", return_value=0.0):
-            sleeping = manager.autonomous_action(now=181)
+            sleeping = manager.autonomous_action(now=301)
         self.assertIsNotNone(sleeping)
         self.assertEqual(sleeping.state, "sleep")
+        self.assertEqual(sleeping.dialogue, "")
+        self.assertEqual(sleeping.duration, float("inf"))
+        self.assertIsNone(manager.state_until)
+        self.assertFalse(manager.update(now=1_000_000))
+        self.assertEqual(manager.state, "sleep")
 
     def test_context_reactions_only_start_while_idle(self) -> None:
         manager = PetBehaviorManager()
@@ -132,7 +149,7 @@ class SpriteCleanupTests(unittest.TestCase):
                 image = source.convert("RGBA")
             top_region = image.crop((0, 0, image.width, round(image.height * 0.24)))
             yellow = sum(
-                1 for red, green, blue, alpha in top_region.get_flattened_data()
+            1 for red, green, blue, alpha in top_region.getdata()
                 if alpha > 80 and red > 140 and green > 70 and blue < 145
                 and red > green * 1.04 and green > blue * 1.25
             )
@@ -154,7 +171,7 @@ class PetSizeTests(unittest.TestCase):
         self.assertEqual(normalize(0.1), 0.5)
         self.assertEqual(normalize(1.0), 1.0)
         self.assertEqual(normalize(2.0), 1.5)
-        self.assertEqual(normalize("invalid"), 1.0)
+        self.assertEqual(normalize("invalid"), APP_MODULE.DEFAULT_PET_SCALE)
 
     def test_size_change_resizes_window_and_layered_surface(self) -> None:
         pet = APP_MODULE.DesktopPet.__new__(APP_MODULE.DesktopPet)
@@ -265,7 +282,9 @@ class PresentationTests(unittest.TestCase):
 
     def test_status_bubble_yields_to_dialogue_and_returns_when_idle(self) -> None:
         pet = APP_MODULE.DesktopPet.__new__(APP_MODULE.DesktopPet)
+        pet.settings = {"show_status_bubble": True}
         pet.behavior = Mock(state="idle")
+        pet.motion_pose = SimpleNamespace(state="idle", phase="loop")
         pet.bubble = SpeechBubble()
         pet.context_bubble_active = False
         pet.hover_inside = False
@@ -277,6 +296,13 @@ class PresentationTests(unittest.TestCase):
         self.assertTrue(pet.context_bubble_active)
         self.assertEqual(pet.bubble.text, "18:04 · 天气未设置 · CPU 1%")
 
+        pet.motion_pose = SimpleNamespace(state="sleep", phase="loop")
+        pet._update_pet_context_bubble(20.1)
+        self.assertTrue(pet.context_bubble_active)
+        pet.motion_pose = SimpleNamespace(state="sleep", phase="exit")
+        pet._update_pet_context_bubble(20.2)
+        self.assertFalse(pet.context_bubble_active)
+
         pet._hide_context_bubble()
         pet.bubble.show("今天想吃点啥？", 3.0, now=10.0)
         pet._update_pet_context_bubble(10.1)
@@ -284,6 +310,7 @@ class PresentationTests(unittest.TestCase):
         self.assertEqual(pet.bubble.text, "今天想吃点啥？")
 
         pet.bubble = SpeechBubble()
+        pet.motion_pose = SimpleNamespace(state="idle", phase="loop")
         pet._update_pet_context_bubble(20.0)
         self.assertTrue(pet.context_bubble_active)
         self.assertEqual(pet.bubble.text, "18:04 · 天气未设置 · CPU 1%")
@@ -306,7 +333,7 @@ class ContextTests(unittest.TestCase):
             def __exit__(self, *_args: object) -> None:
                 pass
 
-            def read(self) -> bytes:
+            def read(self, _limit: int = -1) -> bytes:
                 import json
                 return json.dumps(self.data).encode("utf-8")
 
@@ -363,7 +390,7 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(cpu.dialogue, "cpu")
 
     def test_cpu_monitor_calculates_busy_percentage_from_windows_counters(self) -> None:
-        monitor = CpuMonitor()
+        from pet_cpu import _SystemTimesBackend
         samples = iter(((0, 0, 0), (20, 100, 100)))
 
         def get_times(idle_ptr: object, kernel_ptr: object, user_ptr: object) -> int:
@@ -373,7 +400,12 @@ class ContextTests(unittest.TestCase):
             user_ptr._obj.dwLowDateTime = user
             return 1
 
-        monitor._get_system_times = get_times
+        def pdh_unavailable():
+            raise OSError("Counter unavailable in this fallback test")
+
+        monitor = CpuMonitor(pdh_factory=pdh_unavailable,
+                             system_times_factory=lambda: _SystemTimesBackend(get_times))
+        self.addCleanup(monitor.close)
         self.assertIsNone(monitor.sample())
         self.assertAlmostEqual(monitor.sample() or 0.0, 90.0)
 

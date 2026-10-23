@@ -1,0 +1,295 @@
+{
+  "schema_version": 1,
+  "library_version": "0.9.6",
+  "runtime": "netfx",
+  "target_framework": "net472",
+  "runtime_identifier": "win-x64",
+  "minimum_framework_release": 528040,
+  "packages": [
+    {
+      "id": "LibreHardwareMonitorLib",
+      "version": "0.9.6",
+      "url": "https://api.nuget.org/v3-flatcontainer/librehardwaremonitorlib/0.9.6/librehardwaremonitorlib.0.9.6.nupkg",
+      "sha256": "60db5e0d9135f4658b385cae139d3b9eaeac0a8e867d322d20b5dbe4c4039197",
+      "member": "runtimes/win-x64/lib/net472/LibreHardwareMonitorLib.dll",
+      "license": "MPL-2.0",
+      "copyright": "LibreHardwareMonitor",
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/LibreHardwareMonitor/LibreHardwareMonitor",
+        "commit": "3d331e3370efb858411f19511373eff65a218701"
+      },
+      "project_url": "https://github.com/LibreHardwareMonitor/LibreHardwareMonitor",
+      "file": "LibreHardwareMonitorLib.dll",
+      "file_sha256": "6ebc194316536ba61af5be24508ad9fcbb2ecc685e716c12e787c79530f66bf0"
+    },
+    {
+      "id": "BlackSharp.Core",
+      "version": "1.0.7",
+      "url": "https://api.nuget.org/v3-flatcontainer/blacksharp.core/1.0.7/blacksharp.core.1.0.7.nupkg",
+      "sha256": "4f713fe18ee7c85a7c49f28309adaa815714333326aa81fd4d4a81619ecaa0ab",
+      "member": "lib/net472/BlackSharp.Core.dll",
+      "license": "MPL-2.0",
+      "copyright": "Florian K.",
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/Blacktempel/BlackSharp",
+        "commit": "c70b735c6cec123ee8a046ac4a0bc6c606f52cf0"
+      },
+      "project_url": "https://github.com/Blacktempel/BlackSharp",
+      "file": "BlackSharp.Core.dll",
+      "file_sha256": "cafb93afcc8d8a367e21f619673d05c06887d8964867fed1371f02ded1cd3e23"
+    },
+    {
+      "id": "DiskInfoToolkit",
+      "version": "1.1.2",
+      "url": "https://api.nuget.org/v3-flatcontainer/diskinfotoolkit/1.1.2/diskinfotoolkit.1.1.2.nupkg",
+      "sha256": "a997f0b3701e20b2ab9296e07ee4f74f877e75015277fb6bd314ade1e2c4db13",
+      "member": "lib/net472/DiskInfoToolkit.dll",
+      "license": "MPL-2.0",
+      "copyright": "Florian K.",
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/Blacktempel/DiskInfoToolkit",
+        "commit": "25319eae5781e75bcf141e844ceab2afe94d40ea"
+      },
+      "project_url": "https://github.com/Blacktempel/DiskInfoToolkit",
+      "file": "DiskInfoToolkit.dll",
+      "file_sha256": "1acbf51b3c10c51c986cf43021680d34a2e38d9a5ba652bcfa9a1b5f7fc09800"
+    },
+    {
+      "id": "HidSharp",
+      "version": "2.6.4",
+      "url": "https://api.nuget.org/v3-flatcontainer/hidsharp/2.6.4/hidsharp.2.6.4.nupkg",
+      "sha256": "cf55d4b4d7b42dc1d8496b7b592ba00d1ecd48a70bc07bd8dabd3e9976d108e7",
+      "member": "lib/net35/HidSharp.dll",
+      "license": "LICENSE.txt",
+      "copyright": "Copyright 2010-2025 James Bellinger",
+      "repository": {},
+      "project_url": "https://software.seekye.com/hidsharp",
+      "file": "HidSharp.dll",
+      "file_sha256": "d86690efde30ea9179f669320f39148853793b743a98b531afeaf30598e22f54"
+    },
+    {
+      "id": "RAMSPDToolkit-NDD",
+      "version": "1.4.2",
+      "url": "https://api.nuget.org/v3-flatcontainer/ramspdtoolkit-ndd/1.4.2/ramspdtoolkit-ndd.1.4.2.nupkg",
+      "sha256": "57c893824a68c71538055f242586616d4205a671c300897c21b2a6f88270ce64",
+      "member": "lib/net472/RAMSPDToolkit-NDD.dll",
+      "license": "MPL-2.0",
+      "copyright": "Florian K.",
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/Blacktempel/RAMSPDToolkit",
+        "commit": "3b47b960e0830fef344624ad5e389675d5f0a1ce"
+      },
+      "project_url": "https://github.com/Blacktempel/RAMSPDToolkit",
+      "file": "RAMSPDToolkit-NDD.dll",
+      "file_sha256": "b6882354c7c8ec186617e421507743dbfae09c5c1fc24cef76a1d0c0c26651de"
+    },
+    {
+      "id": "System.Management",
+      "version": "10.0.2",
+      "url": "https://api.nuget.org/v3-flatcontainer/system.management/10.0.2/system.management.10.0.2.nupkg",
+      "sha256": "bb40e7e33254bd2a5fb66b6f476e1e9ea28f0f1c403172696afdbfb1f8b06221",
+      "member": null,
+      "license": "MIT",
+      "copyright": "© Microsoft Corporation. All rights reserved.",
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/dotnet/dotnet",
+        "commit": "44525024595742ebe09023abe709df51de65009b"
+      },
+      "project_url": "https://dot.net/",
+      "provided_by": "System.Management from the Windows .NET Framework GAC, as declared by NuGet frameworkAssemblies for net462+"
+    },
+    {
+      "id": "System.Memory",
+      "version": "4.6.3",
+      "url": "https://api.nuget.org/v3-flatcontainer/system.memory/4.6.3/system.memory.4.6.3.nupkg",
+      "sha256": "26078aeb758c9ae985e8bf851f973026061da6a5eb4837204d0c2d2204c72955",
+      "member": "lib/net462/System.Memory.dll",
+      "license": "MIT",
+      "copyright": "© Microsoft Corporation. All rights reserved.",
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/dotnet/maintenance-packages",
+        "commit": "f62ca0009b038cab4725a720f386623a969d73ad"
+      },
+      "project_url": "https://github.com/dotnet/maintenance-packages",
+      "file": "System.Memory.dll",
+      "file_sha256": "d5e8e4866f9cfa66f7765660f84b210198893e55335487afe5ebda342c0e913d"
+    },
+    {
+      "id": "System.Buffers",
+      "version": "4.6.1",
+      "url": "https://api.nuget.org/v3-flatcontainer/system.buffers/4.6.1/system.buffers.4.6.1.nupkg",
+      "sha256": "b00451e91d016fbec091ad1e361f3a7015e1d91d4047f7e48a74455b2a673d79",
+      "member": "lib/net462/System.Buffers.dll",
+      "license": "MIT",
+      "copyright": "© Microsoft Corporation. All rights reserved.",
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/dotnet/maintenance-packages",
+        "commit": "6b84308c9ad012f53240d72c1d716d7e42546483"
+      },
+      "project_url": "https://github.com/dotnet/maintenance-packages",
+      "file": "System.Buffers.dll",
+      "file_sha256": "2d78d770c9cb997199154ae8c018b9f1d1efbc86729f7264dde6dbad2a12cac3"
+    },
+    {
+      "id": "System.Numerics.Vectors",
+      "version": "4.6.1",
+      "url": "https://api.nuget.org/v3-flatcontainer/system.numerics.vectors/4.6.1/system.numerics.vectors.4.6.1.nupkg",
+      "sha256": "2bc500a86dcb02f2032d6d877f9e2d6e9e4a79080e57239b4198679d4031f2c7",
+      "member": "lib/net462/System.Numerics.Vectors.dll",
+      "license": "MIT",
+      "copyright": "© Microsoft Corporation. All rights reserved.",
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/dotnet/maintenance-packages",
+        "commit": "6b84308c9ad012f53240d72c1d716d7e42546483"
+      },
+      "project_url": "https://github.com/dotnet/maintenance-packages",
+      "file": "System.Numerics.Vectors.dll",
+      "file_sha256": "20c2fa81b8c70d651099d762954f285fd4f942e63b2d7217c145dab8d4b2f4c9"
+    },
+    {
+      "id": "System.Runtime.CompilerServices.Unsafe",
+      "version": "6.1.2",
+      "url": "https://api.nuget.org/v3-flatcontainer/system.runtime.compilerservices.unsafe/6.1.2/system.runtime.compilerservices.unsafe.6.1.2.nupkg",
+      "sha256": "5f6a7f53af3465f92beb6da873ebe0e496206c313313b98badee4355a6b25937",
+      "member": "lib/net462/System.Runtime.CompilerServices.Unsafe.dll",
+      "license": "MIT",
+      "copyright": "© Microsoft Corporation. All rights reserved.",
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/dotnet/maintenance-packages",
+        "commit": "f62ca0009b038cab4725a720f386623a969d73ad"
+      },
+      "project_url": "https://github.com/dotnet/maintenance-packages",
+      "file": "System.Runtime.CompilerServices.Unsafe.dll",
+      "file_sha256": "08cbd7278b66f1e68425a82d4b97181a4130d93e3dd91831407aba7212ccdacf"
+    },
+    {
+      "id": "System.Threading.AccessControl",
+      "version": "10.0.3",
+      "url": "https://api.nuget.org/v3-flatcontainer/system.threading.accesscontrol/10.0.3/system.threading.accesscontrol.10.0.3.nupkg",
+      "sha256": "9f4f28238e13c6cc47b789a4a1d5647997747594dfcfd45c1526f9b671cde073",
+      "member": "lib/net462/System.Threading.AccessControl.dll",
+      "license": "MIT",
+      "copyright": "© Microsoft Corporation. All rights reserved.",
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/dotnet/dotnet",
+        "commit": "c2435c3e0f46de784341ac3ed62863ce77e117b4"
+      },
+      "project_url": "https://dot.net/",
+      "file": "System.Threading.AccessControl.dll",
+      "file_sha256": "5e3a3902f04f840c0fc1f9c2f249f804f6cfdf7901b2e06778bc2a4603ae4694"
+    },
+    {
+      "id": "System.Security.AccessControl",
+      "version": "6.0.0",
+      "url": "https://api.nuget.org/v3-flatcontainer/system.security.accesscontrol/6.0.0/system.security.accesscontrol.6.0.0.nupkg",
+      "sha256": "a8ec961016cdaf7123c92f9eb451bcff331bb8f8c0f8ef9d8bbd7b24ff42c728",
+      "member": "runtimes/win/lib/net461/System.Security.AccessControl.dll",
+      "license": "MIT",
+      "copyright": "© Microsoft Corporation. All rights reserved.",
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/dotnet/runtime",
+        "commit": "4822e3c3aa77eb82b2fb33c9321f923cf11ddde6"
+      },
+      "project_url": "https://dot.net/",
+      "file": "System.Security.AccessControl.dll",
+      "file_sha256": "ff14c5f628b9a6798d173aefbba0a43d61e66f715108e2576ac0d3dfab9071d0"
+    },
+    {
+      "id": "System.Security.Principal.Windows",
+      "version": "5.0.0",
+      "url": "https://api.nuget.org/v3-flatcontainer/system.security.principal.windows/5.0.0/system.security.principal.windows.5.0.0.nupkg",
+      "sha256": "081390c25f6f78592b28ada853c24514488a221fe9f9a24efaaf5373643ff3d6",
+      "member": "runtimes/win/lib/net461/System.Security.Principal.Windows.dll",
+      "license": "MIT",
+      "copyright": "© Microsoft Corporation. All rights reserved.",
+      "repository": {
+        "type": "git",
+        "url": "git://github.com/dotnet/runtime",
+        "commit": "cf258a14b70ad9069470a108f13765e0e5988f51"
+      },
+      "project_url": "https://github.com/dotnet/runtime",
+      "file": "System.Security.Principal.Windows.dll",
+      "file_sha256": "b4d8e15adc235d0e858e39b5133e5d00a4baa8c94f4f39e3b5e791b0f9c0c806"
+    }
+  ],
+  "notices": [
+    {
+      "path": "licenses/LibreHardwareMonitor-MPL-2.0.txt",
+      "url": "https://raw.githubusercontent.com/LibreHardwareMonitor/LibreHardwareMonitor/3d331e3370efb858411f19511373eff65a218701/LICENSE",
+      "sha256": "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"
+    },
+    {
+      "path": "licenses/PawnIO-Modules-LGPL-2.1.txt",
+      "url": "https://raw.githubusercontent.com/LibreHardwareMonitor/LibreHardwareMonitor/3d331e3370efb858411f19511373eff65a218701/LibreHardwareMonitorLib/Resources/PawnIo/COPYING",
+      "sha256": "dc626520dcd53a22f727af3ee42c770e56c97a64fe3adb063799d8ab032fe551"
+    },
+    {
+      "path": "licenses/PawnIO-Modules-README.txt",
+      "url": "https://raw.githubusercontent.com/LibreHardwareMonitor/LibreHardwareMonitor/3d331e3370efb858411f19511373eff65a218701/LibreHardwareMonitorLib/Resources/PawnIo/README",
+      "sha256": "c0933e9986afe65cb8629b2f1f1bf64c765d172f51ca325b0a17037f1fb2e348"
+    },
+    {
+      "path": "licenses/Python.NET-MIT.txt",
+      "url": "https://raw.githubusercontent.com/pythonnet/pythonnet/v3.0.5/LICENSE",
+      "sha256": "e1dc3a6ff017a6800dc27a7220500f512b95fbcd996d38ebbbff85c693245369"
+    },
+    {
+      "path": "licenses/clr-loader-MIT.txt",
+      "url": "https://raw.githubusercontent.com/pythonnet/clr-loader/v0.2.7/LICENSE",
+      "sha256": "b00f9a4b112b44f91276ad8388ed470ad36668ff80f56f15e1e6981c85e6d23d"
+    },
+    {
+      "path": "licenses/BlackSharp-MPL-2.0.txt",
+      "url": "https://raw.githubusercontent.com/Blacktempel/BlackSharp/c70b735c6cec123ee8a046ac4a0bc6c606f52cf0/LICENSE",
+      "sha256": "c6c0fb1ab8557f8a068689cdb4522bfd09e01b6cc853f5aa9aa3f7c141c2f67c"
+    },
+    {
+      "path": "licenses/DiskInfoToolkit-MPL-2.0.txt",
+      "url": "https://raw.githubusercontent.com/Blacktempel/DiskInfoToolkit/25319eae5781e75bcf141e844ceab2afe94d40ea/LICENSE",
+      "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04"
+    },
+    {
+      "path": "licenses/RAMSPDToolkit-MPL-2.0.txt",
+      "url": "https://raw.githubusercontent.com/Blacktempel/RAMSPDToolkit/3b47b960e0830fef344624ad5e389675d5f0a1ce/LICENSE",
+      "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04"
+    },
+    {
+      "path": "licenses/cffi-MIT.txt",
+      "url": "https://raw.githubusercontent.com/python-cffi/cffi/v2.0.0/LICENSE",
+      "sha256": "5ba24ddc57067f9249add644c3afc41a5d6dc37e23433ef759d95df370b0af63"
+    },
+    {
+      "path": "licenses/cffi-AUTHORS.txt",
+      "url": "https://raw.githubusercontent.com/python-cffi/cffi/v2.0.0/AUTHORS",
+      "sha256": "2a67a60bbfb33759d67d645ff131b8e6d6bc4cafc232d751fcac3eda4d314cc8"
+    },
+    {
+      "path": "licenses/pycparser-BSD.txt",
+      "url": "https://raw.githubusercontent.com/eliben/pycparser/release_v2.22/LICENSE",
+      "sha256": "0c846399369ea76ddd7b5c44fe6d16497415fcf015f5cbb508c24bf98b81c5b1"
+    },
+    {
+      "path": "licenses/Microsoft-MIT.txt",
+      "package": "System.Security.AccessControl",
+      "member": "LICENSE.TXT",
+      "sha256": "d7a68596ab69b06f51ca278a6545148e4269a9381c26d597c13df5d88e08cf5b"
+    },
+    {
+      "path": "licenses/hidsharp-LICENSE.txt",
+      "package": "HidSharp",
+      "member": "LICENSE.txt",
+      "sha256": "b065e07179f06490c96bf946e73f821086b2f29efde395f092aea69a907eae16"
+    }
+  ]
+}

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import ctypes
 import math
 import os
 import random
 import sys
+import tempfile
 import threading
 import time
 import tkinter as tk
@@ -19,24 +21,34 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from datetime import datetime
 
-from pet_context import CpuMonitor, ContextReactionScheduler, WeatherReading, fetch_weather
+from pet_context import (ContextReactionScheduler, WeatherReading, WeatherLocation,
+                         fetch_weather, fetch_weather_at)
+from pet_ai import ChatError, request_chat, credential_target as ai_credential_target, migrate_model_name
+from pet_i18n import LANGUAGES, localize, normalize_language, weather_condition
+from pet_metrics import MetricsMonitor
+from pet_startup import StartupManager, SingleInstance
+from pet_tray import temperature_lines, temperature_tooltip, temperature_icon, representative_values
+from pet_visual_effects import sleep_breath, draw_sleep_zzz
 from pet_behavior import PetAction, PetBehaviorManager
 from pet_dialogue import DialogueManager
-from pet_presentation import AnimationController, IdlePoseCycle, SpeechBubble
-from pet_voice import WindowsSpeechInput, WindowsSpeechOutput
+from pet_motion import MotionPlayer
+from pet_presentation import AnimationController, SpeechBubble
+from pet_voice import WindowsSpeechInput
 
 
-APP_NAME = "熊大"
+APP_NAME = "猫咪"
 KEY_COLOR = "#fffefe"
 INK = "#493d50"
 PURPLE = "#7561a8"
-BASE_PET_WIDTH = 340
-BASE_PET_HEIGHT = 410
+BASE_PET_WIDTH = 360
+BASE_PET_HEIGHT = 430
+SPRITE_TOP = 112
+FRAME_PERIOD = 1.0 / 24.0
 MIN_PET_SCALE = 0.5
 MAX_PET_SCALE = 1.5
-DEFAULT_PET_SCALE = 1.0
+DEFAULT_PET_SCALE = 1.3
 OPENAI_ENDPOINT = "https://api.openai.com/v1"
-OPENAI_MODEL = "gpt-5.6-sol"
+OPENAI_MODEL = "gpt-5-mini"
 DEEPSEEK_ENDPOINT = "https://api.deepseek.com"
 DEEPSEEK_MODEL = "deepseek-flash"
 WS_EX_LAYERED = 0x00080000
@@ -49,10 +61,12 @@ CRED_TYPE_GENERIC = 1
 CRED_PERSIST_LOCAL_MACHINE = 2
 ERROR_NOT_FOUND = 1168
 SYSTEM_PROMPT = (
-    "你叫熊大，是住在用户桌面上的一只憨厚大哥型熊伙伴。你贪吃、爱犯懒、调皮、"
-    "喜欢吐槽，有点嘴硬但讲义气，偶尔犯傻、卖萌或小生气。说话自然、接地气，像熟人陪聊，"
-    "不许像客服或正式助手；先接住用户的情绪，再用简短的话回应或帮忙。不要攻击用户，"
-    "不要假装看见屏幕或控制电脑。所有表达必须原创，不套用影视作品台词或剧情。使用中文。"
+    "你是住在用户桌面上的一只安静的狸花猫。平时像真实猫咪一样休息、观察、舔毛，"
+    "不主动唠叨、不扮演大哥、不长篇吐槽。用户主动聊天时，用自然、温和的语言回应，"
+    "默认一到三句，不必每次加喵或猫咪动作描写，不使用夸张颜文字。"
+    "用户需要实际帮助时认真回答，不让角色扮演妨碍清楚表达。"
+    "不要声称看见屏幕、读取文件或控制电脑；没有工具就坦诚说明。"
+    "关心用户但不过度说教，不套用影视作品台词。"
 )
 
 
@@ -161,7 +175,7 @@ def rounded_polygon(canvas: tk.Canvas, x1: int, y1: int, x2: int, y2: int,
 class DesktopPet:
     def __init__(self) -> None:
         self.root = tk.Tk(className="TuanziPet")
-        self.root.title(APP_NAME)
+        self.root.title(self._t(APP_NAME))
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
         self.root.configure(bg=KEY_COLOR)
@@ -169,16 +183,25 @@ class DesktopPet:
         self.width, self.height = BASE_PET_WIDTH, BASE_PET_HEIGHT
         self.settings_path = self._settings_path()
         self.settings = self._load_settings()
+        self.language = normalize_language(self.settings.get("language"))
+        self.root.title(self._t(APP_NAME))
+        self.pending_action = None
+        self.connection_verified = False
+        self.startup = StartupManager()
+        self.startup_status = None
+        self.startup_error = None
+        self.metrics = MetricsMonitor(vendor_dir=resource_path("assets/vendor"))
+        self.metrics.configure(fps_enabled=bool(self.settings.get("show_fps", True)),
+                               temperature_enabled=bool(self.settings.get("show_temperature", True)))
+        self.metrics_snapshot = self.metrics.snapshot()
         self.weather_info: WeatherReading | None = None
         self.weather_error: str | None = None
         self.weather_request_pending = False
         self.next_weather_refresh = 0.0
-        self.cpu_monitor = CpuMonitor()
         self.cpu_percent: float | None = None
         self.next_cpu_sample = 0.0
         self.next_status_refresh = 0.0
         self.context_reactions = ContextReactionScheduler()
-        self.voice_output = WindowsSpeechOutput()
         self.speech_input = WindowsSpeechInput()
         self.companion_window: tk.Toplevel | None = None
         self.pet_scale = self._normalize_pet_scale(self.settings.get("pet_scale"))
@@ -191,12 +214,22 @@ class DesktopPet:
             f"{self.window_width}x{self.window_height}+"
             f"{screen_w - self.window_width - 26}+{screen_h - self.window_height - 60}"
         )
-        self.animation = AnimationController(resource_path("assets/pet"))
-        self.idle_pose = IdlePoseCycle(len(self.animation.frames_for("idle")))
+        self.animation = AnimationController(resource_path("assets/cat"))
+        self._visual_state = "idle"
+        self._actor_mirror = False
+        self._visual_mirror = False
+        self._visual_started = time.monotonic()
+        self._last_sprite = None
+        self._transition_sprite = None
+        self._transition_started = 0.0
 
-        self.api_key = self._load_api_key()
+        self._legacy_key_endpoint = str(self.settings.get("endpoint", ""))
+        self.api_key = self._load_key_for(self._legacy_key_endpoint)
         self.tray_icon = None
         self.tray_thread: threading.Thread | None = None
+        self.temperature_tray_icon = None
+        self.temperature_tray_thread: threading.Thread | None = None
+        self._tray_metrics_signature = None
         self.history: list[dict[str, str]] = []
         self.chat_window: tk.Toplevel | None = None
         self.chat_text: tk.Text | None = None
@@ -209,7 +242,19 @@ class DesktopPet:
         self.settings_window: tk.Toplevel | None = None
         self.size_window: tk.Toplevel | None = None
         self.dialogue = DialogueManager()
-        self.behavior = PetBehaviorManager()
+        walk_spec = self.animation.motion_spec("walk")
+        sleep_spec = self.animation.motion_spec("sleep")
+        durations = {"groom": self.animation.clip_duration("groom") or 9.1667}
+        if walk_spec.stages:
+            # Request the outro during the first or second stable gait cycle.
+            enter, loop = walk_spec.stage_duration("enter"), walk_spec.stage_duration("loop")
+            durations["walk"] = (enter + loop * 0.25, enter + loop * 1.25)
+        manual_walk = (walk_spec.stage_duration("enter") + walk_spec.stage_duration("loop") * 0.5
+                       if walk_spec.stages else 4.0)
+        self.behavior = PetBehaviorManager(state_duration=durations, manual_walk_duration=manual_walk)
+        self.motion = MotionPlayer(self.animation.motion_specs, now=self.behavior.state_started,
+                                   idle_entries=self.animation.idle_entries)
+        self.motion_pose = self.motion.sample(self.behavior.state_started)
         self.bubble = SpeechBubble()
         self.context_bubble_active = False
         self.speech_warning_shown = False
@@ -222,9 +267,7 @@ class DesktopPet:
         self.waiting = False
         self.drag_start: tuple[int, int, int, int] | None = None
         self.did_drag = False
-        self.blink_until = 0.0
-        self.next_blink = time.monotonic() + random.uniform(2.5, 5.5)
-        self.current_sprite_bbox = (48, 112, 292, 360)
+        self.current_sprite_bbox = (20, SPRITE_TOP, 340, 412)
         self._size_resize_job: str | None = None
         self.context_window: tk.Toplevel | None = None
         self.context_click_poll_job: str | None = None
@@ -245,13 +288,90 @@ class DesktopPet:
         self.root.bind("<Motion>", self._on_hover_motion)
         self.root.bind("<Leave>", self._hide_hover_bubble)
         self._init_layered_surface()
+        self._enable_animation_timer()
         self.root.protocol("WM_DELETE_WINDOW", self._quit_app)
         self._start_tray_icon()
+        self.metrics.start()
+        # Source runs and isolated QA profiles never register login startup.
+        if getattr(sys, "frozen", False) and not os.environ.get("PAWPAL_DATA_DIR"):
+            self._apply_startup(bool(self.settings.get("start_with_windows", True)), automatic=True)
         self._animate()
+
+    def _t(self, text: str) -> str:
+        return localize(text, getattr(self, "language", "zh-CN"))
+
+    def _apply_language(self, language: str) -> None:
+        self.language = normalize_language(language)
+        self.settings["language"] = self.language
+        self._save_settings_file()
+        def update(widget):
+            try:
+                if isinstance(widget, (tk.Tk, tk.Toplevel)):
+                    widget.title(self._t(widget.title()))
+                if isinstance(widget, tk.Canvas):
+                    for item in widget.find_all():
+                        if widget.type(item) == "text":
+                            widget.itemconfigure(item, text=self._t(widget.itemcget(item, "text")))
+                elif isinstance(widget, ttk.Notebook):
+                    for tab in widget.tabs():
+                        widget.tab(tab, text=self._t(widget.tab(tab, "text")))
+                elif isinstance(widget, ttk.Combobox) and hasattr(widget, "_localizable_values"):
+                    selected = widget.current()
+                    widget.configure(values=[self._t(value) for value in widget._localizable_values])
+                    if selected >= 0:
+                        widget.current(selected)
+                elif "text" in widget.keys():
+                    widget.configure(text=self._t(str(widget.cget("text"))))
+                for child in widget.winfo_children():
+                    update(child)
+                refresh = getattr(widget, "_language_refresh", None)
+                if callable(refresh):
+                    refresh()
+            except tk.TclError:
+                pass
+        update(self.root)
+        if self.tray_icon is not None:
+            self.tray_icon.menu = self._tray_menu()
+            self.tray_icon.update_menu()
+        self._tray_metrics_signature = None
+        self._update_tray_metrics()
+        if self.chat_input is not None:
+            value = self.chat_input.get("1.0", "end-1c")
+            if value in {localize("说点什么…", lang) for lang in LANGUAGES}:
+                self.chat_input.delete("1.0", "end")
+                self.chat_input.insert("1.0", self._t("说点什么…"))
+        self._update_chat_context_status(force=True)
+
+    def _apply_startup(self, enabled: bool, *, automatic: bool = False) -> None:
+        try:
+            status = self.startup.status()
+            if enabled and automatic and status.disabled_by_windows:
+                self.startup_status = status
+                return
+            self.startup_status = self.startup.enable() if enabled else self.startup.disable()
+            self.startup_error = self.startup_status.error
+        except (OSError, ValueError, RuntimeError) as exc:
+            self.startup_error = str(exc)
+
+    def _enable_animation_timer(self) -> None:
+        """Request precise Windows waits for 24 fps, released with the surface."""
+        self._animation_timer = None
+        if os.name != "nt":
+            return
+        try:
+            timer = ctypes.WinDLL("winmm")
+            for name in ("timeBeginPeriod", "timeEndPeriod"):
+                function = getattr(timer, name)
+                function.argtypes = [wintypes.UINT]
+                function.restype = wintypes.UINT
+            if timer.timeBeginPeriod(1) == 0:
+                self._animation_timer = timer
+        except (OSError, AttributeError):
+            pass
 
     def _init_layered_surface(self) -> None:
         if os.name != "nt":
-            raise OSError("熊大的逐像素透明桌宠窗口需要在 Windows 上运行。")
+            raise OSError("猫咪的逐像素透明桌宠窗口需要在 Windows 上运行。")
 
         self.root.update_idletasks()
         # On Windows Tk's winfo_id() is the client child; wm frame is the
@@ -349,69 +469,69 @@ class DesktopPet:
     def _draw(self) -> None:
         from PIL import Image, ImageDraw
 
-        factor = 2
-        frame = Image.new("RGBA", (self.width * factor, self.height * factor), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(frame)
-        s = lambda value: round(value * factor)
+        frame = Image.new("RGBA", (self.width, self.height), (0, 0, 0, 0))
         now = time.monotonic()
-        self.bubble.draw(draw, factor=factor, width=self.width,
-                         font_path=r"C:\Windows\Fonts\msyh.ttc")
-
-        phase = now * 1.7
-        float_y = 2.1 * math.sin(phase)
-        float_x = 1.2 * math.sin(phase * 0.55)
-        state = self.behavior.state
-        elapsed = now - self.behavior.state_started
-        if state == "idle":
-            from_index, to_index, blend = self.idle_pose.frame_pair(now=now)
-            if from_index != to_index and blend > 0.0:
-                relaxed_or_laughing = self.animation.blend_frames(
-                    "idle", from_index, to_index, blend
-                )
-                sprite = relaxed_or_laughing
-            else:
-                # The available blink art matches the laughing pose only. Avoid
-                # flashing it over the relaxed pose, which caused the odd jump.
-                use_blink = now < self.blink_until and from_index == 0
-                sprite = self.animation.frame(
-                    state, elapsed, from_index, blink=use_blink
-                )
+        pose = self.motion_pose
+        visual_state = pose.state
+        mirror = self._actor_mirror
+        if (visual_state, mirror) != (self._visual_state, self._visual_mirror):
+            self._transition_sprite = self._last_sprite
+            self._transition_started = now
+            self._visual_state = visual_state
+            self._visual_mirror = mirror
+            self._transition_duration = 0.22 if visual_state == "idle" else 0.16
+        sprite = self.animation.frame_at_index(visual_state, pose.frame_index, mirror=mirror)
+        blend_index = getattr(pose, "blend_from_index", None)
+        if blend_index is not None:
+            previous = self.animation.frame_at_index(visual_state, blend_index, mirror=mirror)
+            sprite = Image.blend(previous.convert("RGBa"), sprite.convert("RGBa"),
+                                 pose.blend_amount).convert("RGBA")
+        sleeping = visual_state == "sleep" and pose.phase == "loop"
+        if sleeping:
+            if getattr(self, "_last_motion_phase", None) != ("sleep", "loop"):
+                self._sleep_breath_started = now
+            sprite = sleep_breath(sprite, now - self._sleep_breath_started, mirror)
+        self._last_motion_phase = (visual_state, getattr(pose, "phase", "loop"))
+        transition = min(1.0, (now - self._transition_started) / getattr(self, "_transition_duration", 0.16))
+        transition = max(0.0, transition)
+        transition = transition * transition * (3.0 - 2.0 * transition)
+        if self._transition_sprite is not None and transition < 1.0:
+            sprite = Image.blend(
+                self._transition_sprite.convert("RGBa"), sprite.convert("RGBa"),
+                max(0.0, transition),
+            ).convert("RGBA")
         else:
-            sprite = self.animation.frame(
-                state, elapsed, self.sprite_frame_index,
-                mirror=state == "walk" and self.walk_direction < 0,
-            )
-        visible = sprite.getchannel("A").getbbox() or (
-            0, 0, self.animation.cell_size[0], self.animation.cell_size[1]
-        )
-        try:
-            lanczos = Image.Resampling.LANCZOS
-        except AttributeError:
-            lanczos = Image.LANCZOS
-        sprite = sprite.resize((sprite.width * factor, sprite.height * factor), lanczos)
-        sprite_left = (self.width - sprite.width / factor) / 2 + float_x
-        sprite_top = 112 + float_y
+            self._transition_sprite = None
+        self._last_sprite = sprite
+        visible = sprite.getchannel("A").getbbox() or (0, 0, *self.animation.cell_size)
+        sprite_left = (self.width - sprite.width) // 2
         self.current_sprite_bbox = (
-            round(sprite_left + visible[0]), round(sprite_top + visible[1]),
-            round(sprite_left + visible[2]), round(sprite_top + visible[3]),
+            sprite_left + visible[0], SPRITE_TOP + visible[1],
+            sprite_left + visible[2], SPRITE_TOP + visible[3],
         )
-        foot_y = 112 + self.animation.cell_size[1] + float_y
-        draw.ellipse(
-            (s(170 + float_x - 29), s(foot_y - 1),
-             s(170 + float_x + 29), s(foot_y + 8)),
-            fill=(118, 102, 128, 54),
-        )
-        draw.ellipse(
-            (s(170 + float_x - 18), s(foot_y + 1),
-             s(170 + float_x + 18), s(foot_y + 6)),
-            fill=(118, 102, 128, 42),
-        )
-        frame.alpha_composite(sprite, (s(sprite_left), s(sprite_top)))
-
-        frame = frame.resize((self.window_width, self.window_height), lanczos)
+        frame.alpha_composite(sprite, (sprite_left, SPRITE_TOP))
+        if sleeping:
+            draw_sleep_zzz(frame, self.current_sprite_bbox, now - self._sleep_breath_started, mirror)
+        bubble_target = self.current_sprite_bbox[1] - (28 if sleeping else 14)
+        if self.bubble.alpha <= 0.001:
+            self._bubble_anchor = float(bubble_target)
+        else:
+            self._bubble_anchor = getattr(self, "_bubble_anchor", float(bubble_target)) * 0.7 + bubble_target * 0.3
+        self.bubble.draw(ImageDraw.Draw(frame), factor=1, width=self.width,
+                         font_path=r"C:\Windows\Fonts\msyh.ttc",
+                         anchor_bottom=round(self._bubble_anchor),
+                         status=self.context_bubble_active, frame=frame)
+        if frame.size != (self.window_width, self.window_height):
+            frame = frame.convert("RGBa").resize(
+                (self.window_width, self.window_height), Image.Resampling.LANCZOS,
+            ).convert("RGBA")
         self._present_layered_frame(frame)
 
     def _release_layered_surface(self) -> None:
+        timer = getattr(self, "_animation_timer", None)
+        if timer is not None:
+            timer.timeEndPeriod(1)
+            self._animation_timer = None
         if not hasattr(self, "gdi32"):
             return
         if getattr(self, "_mem_dc", None) and getattr(self, "_old_bitmap", None):
@@ -424,7 +544,7 @@ class DesktopPet:
             self._mem_dc = None
 
     @staticmethod
-    def _load_api_key() -> str:
+    def _load_api_key(target: str = "TuanziDesktopPet/OpenAI") -> str:
         if os.name != "nt":
             return ""
         advapi32 = ctypes.WinDLL("Advapi32.dll", use_last_error=True)
@@ -436,7 +556,7 @@ class DesktopPet:
         read_credential.restype = wintypes.BOOL
         credential_ptr = ctypes.POINTER(_CREDENTIALW)()
         if not read_credential(
-            "TuanziDesktopPet/OpenAI", CRED_TYPE_GENERIC, 0,
+            target, CRED_TYPE_GENERIC, 0,
             ctypes.byref(credential_ptr),
         ):
             return ""
@@ -453,13 +573,13 @@ class DesktopPet:
             advapi32.CredFree(credential_ptr)
 
     @staticmethod
-    def _store_api_key(api_key: str) -> None:
+    def _store_api_key(api_key: str, target: str = "TuanziDesktopPet/OpenAI") -> None:
         advapi32 = ctypes.WinDLL("Advapi32.dll", use_last_error=True)
         if not api_key:
             delete_credential = advapi32.CredDeleteW
             delete_credential.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD]
             delete_credential.restype = wintypes.BOOL
-            if not delete_credential("TuanziDesktopPet/OpenAI", CRED_TYPE_GENERIC, 0):
+            if not delete_credential(target, CRED_TYPE_GENERIC, 0):
                 error = ctypes.get_last_error()
                 if error != ERROR_NOT_FOUND:
                     raise ctypes.WinError(error)
@@ -471,8 +591,8 @@ class DesktopPet:
         blob_buffer = (ctypes.c_ubyte * len(blob)).from_buffer_copy(blob)
         credential = _CREDENTIALW()
         credential.Type = CRED_TYPE_GENERIC
-        credential.TargetName = "TuanziDesktopPet/OpenAI"
-        credential.Comment = "熊大 AI API 密钥"
+        credential.TargetName = target
+        credential.Comment = "猫咪 AI API 密钥"
         credential.CredentialBlobSize = len(blob)
         credential.CredentialBlob = ctypes.cast(
             blob_buffer, ctypes.POINTER(ctypes.c_ubyte),
@@ -486,6 +606,56 @@ class DesktopPet:
         if not write_credential(ctypes.byref(credential), 0):
             raise ctypes.WinError(ctypes.get_last_error())
 
+    @staticmethod
+    def _credential_target(endpoint: str) -> str:
+        try:
+            return ai_credential_target(endpoint)
+        except (ChatError, ValueError):
+            # Broken old settings must still let the user open and repair them.
+            return DesktopPet._legacy_credential_target(endpoint)
+
+    @staticmethod
+    def _legacy_credential_target(endpoint: str) -> str:
+        try:
+            host = (urlsplit(endpoint).netloc or endpoint).lower()
+        except ValueError:
+            host = str(endpoint).lower()
+        return "PawpalCat/AI/" + hashlib.sha256(host.encode("utf-8")).hexdigest()[:24]
+
+    def _load_key_for(self, endpoint: str) -> str:
+        key = self._load_api_key(self._credential_target(endpoint))
+        legacy = self._legacy_credential_target(endpoint)
+        if not key and legacy != self._credential_target(endpoint):
+            key = self._load_api_key(legacy)
+        if not key and endpoint == getattr(self, "_legacy_key_endpoint", None):
+            key = self._load_api_key()
+        return key
+
+    def _tray_menu(self):
+        import pystray
+        items = [pystray.MenuItem(self._t("和猫咪聊天"), self._tray_open_chat, default=True)]
+        actions = (("走路", "walk"), ("洗脸", "groom"), ("睡觉", "sleep"), ("唤醒", "idle"))
+        def action_handler(state):
+            def callback(_icon, _item):
+                self._schedule_ui(lambda: self._choose_action(state))
+            return callback
+        items.append(pystray.MenuItem(self._t("动作"), pystray.Menu(*[
+            pystray.MenuItem(self._t(label), action_handler(state))
+            for label, state in actions])))
+        if getattr(self, "settings", {}).get("show_temperature", True):
+            items.append(pystray.MenuItem(self._t("硬件温度"), pystray.Menu(*[
+                pystray.MenuItem(line, None, enabled=False)
+                for line in [self._t("数字图标：上 GPU，下 CPU；多设备取最高值")] +
+                    temperature_lines(getattr(self, "metrics_snapshot", None), self.language)])))
+        items.extend([
+            pystray.MenuItem(self._t("设置 AI 接口"), self._tray_open_settings),
+            pystray.MenuItem(self._t("通用设置"), self._tray_open_companion_settings),
+            pystray.MenuItem(self._t("调整桌宠大小"), self._tray_open_size_settings),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem(self._t("退出猫咪"), self._tray_quit),
+        ])
+        return pystray.Menu(*items)
+
     def _start_tray_icon(self) -> None:
         import pystray
         from PIL import Image
@@ -494,27 +664,59 @@ class DesktopPet:
             self._tray_image = icon_image.convert("RGBA")
 
         self.tray_icon = pystray.Icon(
-            "xiongda_desktop_pet",
+            "pawpal_desktop_cat",
             self._tray_image,
-            APP_NAME,
-            menu=pystray.Menu(
-                pystray.MenuItem("和熊大聊天", self._tray_open_chat, default=True),
-                pystray.MenuItem("设置 AI 接口", self._tray_open_settings),
-                pystray.MenuItem("陪伴与语音设置", self._tray_open_companion_settings),
-                pystray.MenuItem("调整桌宠大小", self._tray_open_size_settings),
-                pystray.Menu.SEPARATOR,
-                pystray.MenuItem("退出熊大", self._tray_quit),
-            ),
+            self._t(APP_NAME),
+            menu=self._tray_menu(),
         )
         self.tray_thread = threading.Thread(
-            target=self.tray_icon.run, name="xiongda-tray", daemon=True,
+            target=self.tray_icon.run, name="pawpal-tray", daemon=True,
         )
         self.tray_thread.start()
+        self.temperature_tray_icon = pystray.Icon(
+            "pawpal_temperature", temperature_icon(None, None),
+            temperature_tooltip(self.metrics_snapshot, self.language), menu=self._tray_menu())
+        numeric = self.temperature_tray_icon
+        def temperature_setup(icon):
+            icon.visible = bool(self.settings.get("show_temperature", True))
+        self.temperature_tray_thread = threading.Thread(
+            target=lambda: numeric.run(setup=temperature_setup),
+            name="pawpal-temperature-tray", daemon=True)
+        self.temperature_tray_thread.start()
+
+    def _update_tray_metrics(self) -> None:
+        """Update existing native tray surfaces at most once per changed reading."""
+        main = getattr(self, "tray_icon", None)
+        numeric = getattr(self, "temperature_tray_icon", None)
+        if main is None and numeric is None:
+            return
+        enabled = bool(self.settings.get("show_temperature", True))
+        snapshot = getattr(self, "metrics_snapshot", None)
+        lines = tuple(temperature_lines(snapshot, self.language)) if enabled else ()
+        signature = (enabled, self.language, lines, representative_values(snapshot))
+        if signature == getattr(self, "_tray_metrics_signature", None):
+            return
+        try:
+            title = temperature_tooltip(snapshot, self.language, enabled)
+            if main is not None:
+                main.title = title
+                main.menu = self._tray_menu()
+            if numeric is not None:
+                numeric.title = title
+                numeric.icon = temperature_icon(*representative_values(snapshot))
+                numeric.menu = self._tray_menu()
+                # Visibility is safe only after the Win32 message window exists.
+                if getattr(numeric, "_running", False):
+                    numeric.visible = enabled
+            self._tray_metrics_signature = signature
+        except (OSError, RuntimeError, ValueError):
+            # A disappearing Explorer tray cannot interrupt the pet's animation.
+            self._tray_metrics_signature = None
 
     def _schedule_ui(self, callback: object) -> None:
         try:
             self.root.after(0, callback)
-        except tk.TclError:
+        except (tk.TclError, RuntimeError):
             pass
 
     def _tray_open_chat(self, _icon: object, _item: object) -> None:
@@ -535,13 +737,22 @@ class DesktopPet:
     def _quit_app(self) -> None:
         self._close_context_menu()
         self.speech_input.stop()
-        self.voice_output.close()
+        self.metrics.stop()
+        if getattr(self, "temperature_tray_icon", None) is not None:
+            try:
+                self.temperature_tray_icon.stop()
+            except Exception:
+                pass
+            self.temperature_tray_icon = None
         if self.tray_icon is not None:
             try:
                 self.tray_icon.stop()
             except Exception:
                 pass
             self.tray_icon = None
+        for thread in (getattr(self, "tray_thread", None), getattr(self, "temperature_tray_thread", None)):
+            if thread is not None and thread is not threading.current_thread():
+                thread.join(timeout=2)
         self._release_layered_surface()
         try:
             self.root.destroy()
@@ -550,6 +761,9 @@ class DesktopPet:
 
     @staticmethod
     def _settings_path() -> Path:
+        override = os.environ.get("PAWPAL_DATA_DIR")
+        if override:
+            return Path(override) / "settings.json"
         base = Path(os.environ.get("APPDATA", str(Path.home())))
         return base / "TuanziDesktopPet" / "settings.json"
 
@@ -566,33 +780,48 @@ class DesktopPet:
     def _load_settings(self) -> dict[str, object]:
         try:
             data = json.loads(self.settings_path.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                return {
-                    "endpoint": str(data.get("endpoint") or OPENAI_ENDPOINT),
-                    "model": str(data.get("model") or OPENAI_MODEL),
-                    "pet_scale": self._normalize_pet_scale(data.get("pet_scale")),
-                    "weather_city": str(data.get("weather_city") or "").strip(),
-                    "cpu_reactions": bool(data.get("cpu_reactions", True)),
-                    "night_reactions": bool(data.get("night_reactions", True)),
-                    "voice_reply_enabled": bool(data.get("voice_reply_enabled", True)),
-                }
-        except (OSError, json.JSONDecodeError):
-            pass
+            if not isinstance(data, dict):
+                data = {}
+        except (OSError, ValueError):
+            data = {}
+        upgraded = data.get("cat_settings_version", 0) == 3
+        endpoint = str(data.get("endpoint") or OPENAI_ENDPOINT)
+        model = str(data.get("model") or OPENAI_MODEL)
+        model = migrate_model_name(endpoint, model)
+        if provider_name_for_endpoint(endpoint) == "OpenAI" and model == "gpt-5.6-sol":
+            model = OPENAI_MODEL
         return {
-            "endpoint": OPENAI_ENDPOINT,
-            "model": OPENAI_MODEL,
-            "pet_scale": DEFAULT_PET_SCALE,
-            "weather_city": "",
-            "cpu_reactions": True,
-            "night_reactions": True,
-            "voice_reply_enabled": True,
+            "endpoint": endpoint, "model": model,
+            "pet_scale": self._normalize_pet_scale(data.get("pet_scale")),
+            "weather_city": str(data.get("weather_city") or "").strip(),
+            "weather_location": data.get("weather_location") if isinstance(data.get("weather_location"), dict) else None,
+            "language": normalize_language(data.get("language")),
+            "cat_profile_version": 1, "cat_settings_version": 3,
+            "cpu_reactions": bool(data.get("cpu_reactions", False)) if data.get("cat_profile_version") else False,
+            "night_reactions": bool(data.get("night_reactions", False)) if data.get("cat_profile_version") else False,
+            "show_status_bubble": bool(data.get("show_status_bubble", True)) if upgraded else True,
+            "show_fps": bool(data.get("show_fps", True)),
+            "show_temperature": bool(data.get("show_temperature", True)),
+            "start_with_windows": bool(data.get("start_with_windows", True)),
+            "ai_profiles": {str(name): {"endpoint": str(value.get("endpoint", "")),
+                                       "model": migrate_model_name(str(value.get("endpoint", "")), str(value.get("model", "")))}
+                            for name, value in data.get("ai_profiles", {}).items() if isinstance(value, dict)}
+                           if isinstance(data.get("ai_profiles"), dict) else {},
         }
 
     def _save_settings_file(self) -> None:
         self.settings_path.parent.mkdir(parents=True, exist_ok=True)
-        self.settings_path.write_text(
-            json.dumps(self.settings, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix="settings-", suffix=".tmp",
+                                             dir=self.settings_path.parent, delete=False) as output:
+                temporary = Path(output.name)
+                json.dump(self.settings, output, ensure_ascii=False, indent=2)
+            os.replace(temporary, self.settings_path)
+            temporary = None
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
     def _apply_pet_scale(self, value: object) -> None:
         scale = self._normalize_pet_scale(value)
@@ -616,15 +845,17 @@ class DesktopPet:
         self._create_surface_bitmap(self.window_width, self.window_height)
 
     def _animate(self) -> None:
+        frame_started = time.perf_counter()
         now = time.monotonic()
         self._track_hover_pointer()
-        if now >= self.next_blink:
-            self.blink_until = now + 0.16
-            self.next_blink = now + random.uniform(2.5, 5.5)
         self._sample_cpu(now)
         self._maybe_refresh_weather(now)
         self.behavior.update(now=now)
-        action = self.behavior.autonomous_action(now=now)
+        if self.motion.is_idle and self.behavior.state == "idle" and self.pending_action:
+            requested, self.pending_action = self.pending_action, None
+            self._on_action(self.behavior.manual_action(requested, now=now))
+        action = (self.behavior.autonomous_action(now=now)
+                  if self.motion.is_idle and not self.pending_action else None)
         if action is not None:
             self._on_action(action)
         context_event = self.context_reactions.poll(
@@ -632,9 +863,9 @@ class DesktopPet:
             local_time=datetime.now(),
             cpu_percent=self.cpu_percent,
             weather=self.weather_info,
-            is_idle=self.behavior.state == "idle",
-            cpu_enabled=bool(self.settings.get("cpu_reactions", True)),
-            night_enabled=bool(self.settings.get("night_reactions", True)),
+            is_idle=self.behavior.state == "idle" and self.motion.is_idle,
+            cpu_enabled=bool(self.settings.get("cpu_reactions", False)),
+            night_enabled=bool(self.settings.get("night_reactions", False)),
         )
         if context_event is not None:
             action = self.behavior.context_action(
@@ -643,7 +874,8 @@ class DesktopPet:
             )
             if action is not None:
                 self._on_action(action)
-        self.idle_pose.update(now=now, is_idle=self.behavior.state == "idle")
+        self.motion_pose = self.motion.update(self.behavior.state, now,
+                                              started_at=self.behavior.state_started)
         self._move_autonomously(now)
         self.bubble.tick(now=now)
         self._update_pet_context_bubble(now)
@@ -652,18 +884,20 @@ class DesktopPet:
             self._update_chat_context_status()
         self._draw()
         try:
-            self.root.after(60, self._animate)
+            spent = time.perf_counter() - frame_started
+            self.root.after(max(1, round((FRAME_PERIOD - spent) * 1000)), self._animate)
         except tk.TclError:
             return
 
     def _sample_cpu(self, now: float) -> None:
         if now < self.next_cpu_sample:
             return
-        self.next_cpu_sample = now + 2.0
-        try:
-            self.cpu_percent = self.cpu_monitor.sample()
-        except (OSError, AttributeError):
-            self.cpu_percent = None
+        self.next_cpu_sample = now + 1.0
+        self.metrics_snapshot = self.metrics.snapshot()
+        updated_at = getattr(self.metrics_snapshot, "updated_at", 0.0)
+        self.cpu_percent = (None if updated_at and now - updated_at > 3.5
+                            else self.metrics_snapshot.cpu_percent)
+        self._update_tray_metrics()
 
     def _maybe_refresh_weather(self, now: float) -> None:
         city = str(self.settings.get("weather_city", "")).strip()
@@ -681,58 +915,76 @@ class DesktopPet:
         ).start()
 
     def _request_weather(self, city: str) -> None:
+        stored = self.settings.get("weather_location")
+        stored = dict(stored) if isinstance(stored, dict) else None
+        signature = json.dumps(stored, sort_keys=True, ensure_ascii=False)
         try:
-            reading = fetch_weather(city)
+            language = getattr(self, "language", "zh-CN")
+            reading = (fetch_weather_at(WeatherLocation.from_dict(stored), language=language)
+                       if stored else fetch_weather(city, language=language))
             error = None
         except (OSError, ValueError, TimeoutError) as exc:
-            reading = None
-            error = str(exc)
-        try:
-            self.root.after(0, lambda: self._finish_weather(city, reading, error))
-        except tk.TclError:
-            return
+            reading, error = None, str(exc)
+        self._schedule_ui(lambda: self._finish_weather(city, reading, error, location_signature=signature))
 
-    def _finish_weather(self, city: str, reading: WeatherReading | None,
-                        error: str | None) -> None:
+    def _finish_weather(self, city: str, reading: WeatherReading | None, error: str | None,
+                        *, location_signature: str | None = None) -> None:
         self.weather_request_pending = False
-        if city != str(self.settings.get("weather_city", "")).strip():
+        location_changed = (location_signature is not None and location_signature !=
+                            json.dumps(self.settings.get("weather_location"), sort_keys=True, ensure_ascii=False))
+        if city != str(self.settings.get("weather_city", "")).strip() or location_changed:
             self.next_weather_refresh = 0.0
             return
-        self.weather_info = reading
         self.weather_error = error
-        self.next_weather_refresh = time.monotonic() + (3600.0 if reading else 1800.0)
-        if reading is None:
-            self.context_reactions.reset_weather()
+        if reading is not None:
+            self.weather_info = reading
+            self._weather_failures = 0
+            delay = 900.0
+        else:
+            self._weather_failures = min(5, getattr(self, "_weather_failures", 0) + 1)
+            delay = min(900.0, 30.0 * 2 ** self._weather_failures)
+        self.next_weather_refresh = time.monotonic() + delay
         self._update_chat_context_status(force=True)
 
     def _context_status_text(self) -> str:
         if self.weather_info is not None:
-            weather = self.weather_info.status_text
+            reading = self.weather_info
+            weather = f"{reading.city} {weather_condition(reading.code, getattr(self, 'language', 'zh-CN'))} {reading.temperature:.0f}°C"
+            if self.weather_error:
+                weather += " · " + self._t("上次数据")
         elif self.settings.get("weather_city"):
-            weather = f"{self.settings['weather_city']} 天气更新中" if self.weather_error is None else "天气暂不可用"
+            weather = self._t("天气暂不可用") if self.weather_error else self._t("天气更新中")
         else:
-            weather = "天气未设置"
-        cpu = "CPU --" if self.cpu_percent is None else f"CPU {self.cpu_percent:.0f}%"
-        return f"{datetime.now().strftime('%H:%M')}  ·  {weather}  ·  {cpu}"
+            weather = self._t("天气未设置")
+        cpu = "--" if self.cpu_percent is None else f"{self.cpu_percent:.0f}%"
+        lines = [f"{datetime.now():%H:%M} · {weather}", self._t("系统 CPU") + " " + cpu]
+        snapshot = getattr(self, "metrics_snapshot", None)
+        if self.settings.get("show_fps", True) and snapshot is not None:
+            target = (snapshot.fps_target or "").removesuffix(".exe")[:22]
+            if snapshot.fps is not None:
+                fps_text = f"FPS {snapshot.fps:.1f}" + (f" · {target}" if target else "")
+            else:
+                from pet_i18n import tr
+                status = "starting" if snapshot.fps_status == "ready" else snapshot.fps_status
+                fps_text = "FPS -- · " + tr("fps." + status, getattr(self, "language", "zh-CN"))
+            lines.append(fps_text)
+        return "\n".join(lines)
 
     def _update_pet_context_bubble(self, now: float) -> None:
-        idle_without_dialogue = (
-            self.behavior.state == "idle"
-            and not self.hover_inside
-            and self.chat_window is None
-            and self.context_window is None
-        )
-        if idle_without_dialogue and self.context_bubble_active and self.bubble.text:
-            # Keep a persistent status bubble current without restarting its fade.
-            status_text = self._context_status_text()
-            if self.bubble.text != status_text:
-                self.bubble.text = status_text
+        if not getattr(self, "settings", {}).get("show_status_bubble", True):
+            self._hide_context_bubble()
+            return
+        pose = self.motion_pose
+        available = (pose.state in {"idle", "sleep"} and pose.phase == "loop"
+                     and self.chat_window is None and self.context_window is None)
+        if available and self.context_bubble_active and self.bubble.text:
+            self.bubble.text = self._context_status_text()
             self.bubble.expires_at = now + 86400
-        elif (idle_without_dialogue and not self.bubble.text
-              and self.bubble.alpha <= 0.001):
+            self.bubble.target_alpha = 1.0
+        elif available and not self.bubble.text and self.bubble.alpha <= 0.001:
             self.bubble.show(self._context_status_text(), 86400, now=now)
             self.context_bubble_active = True
-        elif self.context_bubble_active:
+        elif not available and self.context_bubble_active:
             self.bubble.hide()
             self.context_bubble_active = False
 
@@ -747,7 +999,7 @@ class DesktopPet:
             return
         try:
             if label.winfo_exists():
-                label.configure(text=self._context_status_text())
+                label.configure(text=self._t(self._context_status_text()))
         except tk.TclError:
             if force:
                 self.chat_context_status = None
@@ -755,35 +1007,51 @@ class DesktopPet:
     def _move_autonomously(self, now: float) -> None:
         elapsed = max(0.0, min(0.12, now - self.walk_step_time))
         self.walk_step_time = now
-        if self.behavior.state != "walk" or elapsed <= 0:
+        weight = self.motion_pose.movement_weight
+        if weight <= 0 or elapsed <= 0 or self.drag_start is not None:
+            self._walk_position_x = None
             return
         screen_w = self.root.winfo_screenwidth()
         left_limit, right_limit = 8, max(8, screen_w - self.window_width - 8)
-        next_x = self.root.winfo_x() + self.walk_direction * 34 * elapsed
+        current_x = getattr(self, "_walk_position_x", None)
+        if current_x is None:
+            current_x = float(self.root.winfo_x())
+        next_x = current_x + self.walk_direction * 30 * getattr(self, "pet_scale", 1.0) * elapsed * weight
         if next_x <= left_limit:
             next_x = left_limit
-            self.walk_direction = 1
+            if self.behavior.state == "walk":
+                self.behavior.user_wave(now=now)
         elif next_x >= right_limit:
             next_x = right_limit
-            self.walk_direction = -1
+            if self.behavior.state == "walk":
+                self.behavior.user_wave(now=now)
+        self._walk_position_x = next_x
         self.root.geometry(f"+{round(next_x)}+{self.root.winfo_y()}")
+        # Apply Tk's deferred geometry before presenting the matching pose.
+        self.root.update_idletasks()
 
     def _on_action(self, action: PetAction) -> None:
         self._hide_context_bubble()
         self.hover_bubble = False
         frames = self.animation.frames_for(action.state)
-        if action.state in {"walk", "sleep"}:
+        if action.state in {"walk", "sleep", "groom"}:
             self.sprite_frame_index = 0
         else:
             self.sprite_frame_index = random.randrange(max(1, len(frames)))
         now = time.monotonic()
         if action.state == "walk":
-            self.walk_direction = random.choice((-1, 1))
+            x = self.root.winfo_x()
+            right = max(8, self.root.winfo_screenwidth() - self.window_width - 8)
+            self.walk_direction = (1 if x < 150 else -1 if right - x < 150
+                                   else random.choice((-1, 1)))
+            self._actor_mirror = ((self.walk_direction > 0)
+                                  if self.animation.source_facing("walk") == "left"
+                                  else (self.walk_direction < 0))
             self.walk_step_time = now
         selected = self.dialogue.choose(action.dialogue, now=now)
         if selected is not None:
             line, duration = selected
-            self.bubble.show(line, duration, now=now)
+            self.bubble.show(self._t(line), duration, now=now)
 
     def _set_hover(self, inside: bool) -> None:
         if inside == self.hover_inside:
@@ -792,11 +1060,11 @@ class DesktopPet:
         now = time.monotonic()
         if inside:
             self._hide_context_bubble()
-            if now - self.last_hover_line >= 18.0 and self.behavior.state == "idle":
+            if now - self.last_hover_line >= 90.0 and self.behavior.state == "idle" and random.random() < 0.22:
                 selected = self.dialogue.choose("interaction", now=now)
                 if selected is not None:
                     line, duration = selected
-                    self.bubble.show(line, min(duration, 3.0), now=now)
+                    self.bubble.show(self._t(line), min(duration, 2.4), now=now)
                     self.hover_bubble = True
                     self.last_hover_line = now
         elif self.hover_bubble:
@@ -836,7 +1104,7 @@ class DesktopPet:
             return
         sx, sy, wx, wy = self.drag_start
         dx, dy = event.x_root - sx, event.y_root - sy
-        if abs(dx) + abs(dy) > 5:
+        if not self.did_drag and abs(dx) + abs(dy) > 5:
             self.did_drag = True
         if self.did_drag:
             screen_w, screen_h = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
@@ -851,6 +1119,22 @@ class DesktopPet:
                 self._on_action(action)
         self.drag_start = None
 
+    def _choose_action(self, state: str) -> None:
+        self._hide_context_bubble()
+        if state == "idle":
+            self.pending_action = None
+            self.behavior.manual_action("idle")
+        elif self.motion.is_idle and self.behavior.state == "idle":
+            self._on_action(self.behavior.manual_action(state))
+        elif state != self.behavior.state:
+            self.pending_action = state
+            from pet_i18n import tr
+            action_name = {"walk": "走路", "groom": "洗脸", "sleep": "睡觉"}.get(state, state)
+            self.bubble.show(tr("action_queued", self.language, action=self._t(action_name)), 2.0)
+            # An infinite sleep must wake before the queued action can run.
+            if self.behavior.state == "sleep":
+                self.behavior.manual_action("idle")
+
     def _show_menu(self, event: tk.Event) -> None:
         self._hide_context_bubble()
         if self.context_window is not None and self.context_window.winfo_exists():
@@ -864,7 +1148,7 @@ class DesktopPet:
             popup.wm_attributes("-transparentcolor", KEY_COLOR)
         except tk.TclError:
             popup.attributes("-alpha", 0.98)
-        menu_w, menu_h = 224, 249
+        menu_w, menu_h = 300, 435
         x = min(event.x_root, popup.winfo_screenwidth() - menu_w - 8)
         y = min(event.y_root, popup.winfo_screenheight() - menu_h - 8)
         popup.geometry(f"{menu_w}x{menu_h}+{max(0, x)}+{max(0, y)}")
@@ -875,21 +1159,25 @@ class DesktopPet:
         rounded_polygon(canvas, 4, 4, menu_w - 4, menu_h - 4, 18,
                         fill="#fbf9fe", outline="#e9e3f0", width=1)
         actions = [
-            ("chat", "和熊大聊天", self.open_chat),
+            ("chat", "和猫咪聊天", self.open_chat),
             ("settings", "设置 AI 接口", self.open_settings),
-            ("companion", "陪伴与语音设置", self.open_companion_settings),
+            ("walk", "走路", lambda: self._choose_action("walk")),
+            ("groom", "洗脸", lambda: self._choose_action("groom")),
+            ("sleep", "睡觉", lambda: self._choose_action("sleep")),
+            ("wake", "唤醒", lambda: self._choose_action("idle")),
+            ("companion", "通用设置", self.open_companion_settings),
             ("size", "调整桌宠大小", self.open_size_settings),
-            ("quit", "退出熊大", self._quit_app),
+            ("quit", "退出猫咪", self._quit_app),
         ]
         for index, (tag, label, action) in enumerate(actions):
             top = 8 + index * 47
-            if index == 4:
+            if tag == "quit":
                 canvas.create_line(18, top - 5, menu_w - 18, top - 5, fill="#eee8f2")
             row_tag = f"row_{tag}"
             bg_tag = f"bg_{tag}"
             rounded_polygon(canvas, 10, top, menu_w - 10, top + 40, 12,
                             fill="#fbf9fe", outline="", tags=(bg_tag,))
-            canvas.create_text(28, top + 20, text=label, anchor="w", fill=INK,
+            canvas.create_text(28, top + 20, text=self._t(label), anchor="w", fill=INK,
                                font=("Microsoft YaHei UI", 10), tags=(row_tag,))
             for item_tag in (bg_tag, row_tag):
                 canvas.tag_bind(item_tag, "<Enter>",
@@ -968,7 +1256,7 @@ class DesktopPet:
             return self.chat_window
 
         win = tk.Toplevel(self.root)
-        win.title("和熊大聊天")
+        win.title(self._t("和猫咪聊天"))
         win.overrideredirect(True)
         popup_x = max(8, self.root.winfo_x() - 432)
         popup_y = min(self.root.winfo_y(), win.winfo_screenheight() - 632)
@@ -1000,16 +1288,16 @@ class DesktopPet:
         rounded_polygon(canvas, 4, 4, 416, 616, 28, fill="#f8f6fb", outline="#e9e4ef", width=1)
         rounded_polygon(canvas, 4, 4, 416, 78, 26, fill="#f8f6fb", outline="",
                         tags=("header_drag",))
-        canvas.create_text(26, 34, text="✦", fill=PURPLE,
+        canvas.create_text(26, 34, text=self._t("✦"), fill=PURPLE,
                            font=("Segoe UI Symbol", 19), anchor="w", tags=("title_drag",))
-        canvas.create_text(55, 34, text="熊大", fill=INK, anchor="w",
+        canvas.create_text(55, 34, text=self._t("猫咪"), fill=INK, anchor="w",
                            font=("Microsoft YaHei UI", 15, "bold"), tags=("title_drag",))
-        canvas.create_text(56, 60, text="DESKTOP COMPANION", fill="#9b91a4", anchor="w",
+        canvas.create_text(56, 60, text=self._t("DESKTOP COMPANION"), fill="#9b91a4", anchor="w",
                            font=("Segoe UI", 8), tags=("title_drag",))
         rounded_polygon(canvas, 299, 18, 364, 50, 15, fill="#eee8fa", outline="", tags=("settings",))
-        canvas.create_text(331, 34, text="设置", fill="#67588a",
+        canvas.create_text(331, 34, text=self._t("设置"), fill="#67588a",
                            font=("Microsoft YaHei UI", 9), tags=("settings",))
-        canvas.create_text(390, 34, text="×", fill="#82768d",
+        canvas.create_text(390, 34, text=self._t("×"), fill="#82768d",
                            font=("Segoe UI", 18), tags=("close",))
         canvas.tag_bind("settings", "<Button-1>", lambda _event: self.open_settings())
         canvas.tag_bind("close", "<Button-1>", lambda _event: self._close_chat())
@@ -1020,16 +1308,16 @@ class DesktopPet:
 
         rounded_polygon(canvas, 18, 86, 402, 487, 22, fill="#fffdfd", outline="#ede8f3", width=1)
         self.chat_context_status = ttk.Label(
-            win, text=self._context_status_text(), background="#fffdfd",
+            win, text=self._t(self._context_status_text()), background="#fffdfd",
             foreground="#71658a", font=("Microsoft YaHei UI", 8),
             wraplength=360, anchor="w",
         )
         canvas.create_window(31, 92, anchor="nw", window=self.chat_context_status,
-                             width=365, height=20)
-        self.chat_status = ttk.Label(win, text=self._mode_label(), background="#fffdfd",
+                             width=365, height=58)
+        self.chat_status = ttk.Label(win, text=self._t(self._mode_label()), background="#fffdfd",
                                      foreground="#968b9e", font=("Microsoft YaHei UI", 8),
                                      wraplength=350, anchor="w")
-        canvas.create_window(31, 115, anchor="nw", window=self.chat_status,
+        canvas.create_window(31, 154, anchor="nw", window=self.chat_status,
                              width=365, height=20)
         self.chat_text = tk.Text(
             win, wrap="word", state="disabled", relief="flat", bd=0,
@@ -1037,7 +1325,7 @@ class DesktopPet:
             font=("Microsoft YaHei UI", 10), spacing1=3, spacing3=7,
             highlightthickness=0,
         )
-        canvas.create_window(28, 144, anchor="nw", window=self.chat_text, width=364, height=323)
+        canvas.create_window(28, 180, anchor="nw", window=self.chat_text, width=364, height=287)
         self.chat_text.tag_configure("pet", foreground="#65518f", lmargin1=7, lmargin2=7, rmargin=28)
         self.chat_text.tag_configure("user", foreground="#3b5860", lmargin1=38, lmargin2=38, rmargin=7)
         self.chat_text.tag_configure("note", foreground="#91869a", justify="center",
@@ -1050,32 +1338,32 @@ class DesktopPet:
             tag = f"quick_{index}"
             rounded_polygon(canvas, left, 500, left + 118, 534, 15,
                             fill="#eee8fa", outline="", tags=(tag,))
-            canvas.create_text(left + 59, 517, text=label, fill="#67588a",
-                               font=("Microsoft YaHei UI", 9), tags=(tag,))
-            canvas.tag_bind(tag, "<Button-1>", lambda _event, p=prompt: self._send_text(p))
+            canvas.create_text(left + 59, 517, text=self._t(label), fill="#67588a",
+                               font=("Microsoft YaHei UI", 8), width=110, justify="center", tags=(tag,))
+            canvas.tag_bind(tag, "<Button-1>", lambda _event, p=prompt: self._send_text(self._t(p)))
 
         rounded_polygon(canvas, 18, 546, 402, 602, 20, fill="#f5f2f8", outline="#eee9f2", width=1)
         self.chat_input = tk.Text(win, height=2, wrap="word", relief="flat", bd=0,
                                   bg="#f5f2f8", fg=INK, padx=5, pady=6,
                                   font=("Microsoft YaHei UI", 10), highlightthickness=0)
         canvas.create_window(31, 556, anchor="nw", window=self.chat_input, width=250, height=38)
-        self.chat_input.insert("1.0", "说点什么…")
+        self.chat_input.insert("1.0", self._t("说点什么…"))
         self.chat_input.configure(fg="#a69aaa")
         self.chat_input.bind("<FocusIn>", self._clear_placeholder)
         self.chat_input.bind("<Return>", self._send_on_enter)
         rounded_polygon(canvas, 288, 553, 328, 595, 17, fill="#eee8fa", outline="",
                         tags=("mic_bg", "mic"))
-        canvas.create_text(308, 574, text="\uE720", fill="#67588a",
+        canvas.create_text(308, 574, text=self._t("\uE720"), fill="#67588a",
                            font=("Segoe MDL2 Assets", 14), tags=("mic_icon", "mic"))
         self.mic_canvas = canvas
         canvas.tag_bind("mic", "<Button-1>", lambda _event: self._toggle_speech_input())
         rounded_polygon(canvas, 337, 553, 391, 595, 18, fill=PURPLE, outline="", tags=("send",))
-        canvas.create_text(364, 574, text="发送", fill="#ffffff",
+        canvas.create_text(364, 574, text=self._t("发送"), fill="#ffffff",
                            font=("Microsoft YaHei UI", 9, "bold"), tags=("send",))
         canvas.tag_bind("send", "<Button-1>", lambda _event: self._send_from_input())
         win.bind("<Escape>", lambda _event: self._close_chat())
 
-        self._append_message("pet", self._initial_greeting())
+        self._append_message("pet", self._t(self._initial_greeting()))
         return win
 
     def open_chat(self) -> None:
@@ -1101,7 +1389,7 @@ class DesktopPet:
     def _toggle_speech_input(self) -> None:
         if self.mic_listening:
             if self.chat_status is not None:
-                self.chat_status.configure(text="俺还在听；说完停顿一下，识别后会填进输入框。")
+                self.chat_status.configure(text=self._t("还在听；说完停顿一下，识别后会填进输入框。"))
             return
         if self.chat_input is None:
             return
@@ -1110,7 +1398,7 @@ class DesktopPet:
             self.mic_canvas.itemconfigure("mic_bg", fill="#f7e4e5")
             self.mic_canvas.itemconfigure("mic_icon", fill="#b64d58")
         if self.chat_status is not None:
-            self.chat_status.configure(text="正在听你说话；说完停顿一下，识别后会填进输入框。")
+            self.chat_status.configure(text=self._t("正在听你说话；说完停顿一下，识别后会填进输入框。"))
 
         def completed(text: str | None, error: str | None) -> None:
             try:
@@ -1133,45 +1421,40 @@ class DesktopPet:
         if cancelled or self.chat_input is None:
             if self.chat_status is not None:
                 try:
-                    self.chat_status.configure(text=self._mode_label())
+                    self.chat_status.configure(text=self._t(self._mode_label()))
                 except tk.TclError:
                     pass
             return
         if text:
-            if self.chat_input.get("1.0", "end-1c") == "说点什么…":
+            if self.chat_input.get("1.0", "end-1c") == self._t("说点什么…"):
                 self.chat_input.delete("1.0", "end")
                 self.chat_input.configure(fg=INK)
             existing = self.chat_input.get("1.0", "end-1c").strip()
             self.chat_input.insert("end" if existing else "1.0",
                                    (" " if existing else "") + text)
             self.chat_input.focus_set()
-            if self.waiting or existing:
-                if self.chat_status is not None:
-                    self.chat_status.configure(text="识别完成，文字已放进输入框；当前有内容，检查后点发送。")
-                    try:
-                        self.root.after(5000, self._restore_speech_status)
-                    except tk.TclError:
-                        pass
-            else:
-                if self.chat_status is not None:
-                    self.chat_status.configure(text="识别完成，正在发送给熊大…")
-                self._send_from_input()
-        elif error:
-            self._append_message("pet", error)
             if self.chat_status is not None:
-                self.chat_status.configure(text=error)
+                self.chat_status.configure(text=self._t("识别完成，检查输入框里的文字后再点发送。"))
+                try:
+                    self.root.after(5000, self._restore_speech_status)
+                except tk.TclError:
+                    pass
+        elif error:
+            self._append_message("pet", self._t(error))
+            if self.chat_status is not None:
+                self.chat_status.configure(text=self._t(error))
 
     def _restore_speech_status(self) -> None:
         if self.chat_status is None:
             return
         try:
-            if self.chat_status.winfo_exists() and str(self.chat_status.cget("text")).startswith("识别完成"):
-                self.chat_status.configure(text=self._mode_label())
+            if self.chat_status.winfo_exists() and not self.waiting and not self.mic_listening:
+                self.chat_status.configure(text=self._t(self._mode_label()))
         except tk.TclError:
             pass
 
     def _clear_placeholder(self, _event: tk.Event) -> None:
-        if self.chat_input is not None and self.chat_input.get("1.0", "end-1c") == "说点什么…":
+        if self.chat_input is not None and self.chat_input.get("1.0", "end-1c") == self._t("说点什么…"):
             self.chat_input.delete("1.0", "end")
             self.chat_input.configure(fg=INK)
 
@@ -1185,7 +1468,7 @@ class DesktopPet:
         if self.chat_input is None:
             return
         text = self.chat_input.get("1.0", "end-1c").strip()
-        if not text or text == "说点什么…":
+        if not text or text == self._t("说点什么…"):
             return
         self.chat_input.delete("1.0", "end")
         self.chat_input.configure(fg=INK)
@@ -1196,7 +1479,7 @@ class DesktopPet:
             return
         self.chat_text.configure(state="normal")
         tag = "user" if speaker == "user" else "pet"
-        prefix = "你  " if speaker == "user" else "熊大  "
+        prefix = self._t("你") + "  " if speaker == "user" else self._t("猫咪") + "  "
         self.chat_text.insert("end", prefix + text.strip() + "\n\n", tag)
         self.chat_text.configure(state="disabled")
         self.chat_text.see("end")
@@ -1205,29 +1488,33 @@ class DesktopPet:
         endpoint = self.settings.get("endpoint", "").strip()
         model = self.settings.get("model", "").strip()
         if not endpoint or not model:
-            return "现在能本地陪你唠嗑；想接 AI 就点右上角设置，先说好 API 账单你负责啊。"
-        provider = provider_name_for_endpoint(endpoint)
+            return "喵。我在这里陪你。需要聊天时，随时叫我。"
+        provider = self._t(provider_name_for_endpoint(endpoint))
         if provider in ("OpenAI", "DeepSeek") and not self.api_key:
-            return f"先把 {provider} API Key 填进设置，咱就能开聊了。"
-        return "今天想聊点啥？先说好，聊完得给俺留点零食。"
+            return f"喵。想聊天的话，可以先在设置里填入 {provider} API Key。"
+        return "喵。今天过得怎么样？"
 
     def _mode_label(self) -> str:
         model = self.settings.get("model", "").strip()
         endpoint = self.settings.get("endpoint", "").strip()
-        provider = provider_name_for_endpoint(endpoint)
+        provider = self._t(provider_name_for_endpoint(endpoint))
         if model and endpoint and provider in ("OpenAI", "DeepSeek") and not self.api_key:
-            return f"{provider} · 请设置 API Key"
+            return provider + " · " + self._t("请设置 API Key")
         if model and endpoint:
-            return f"AI 已配置 · {provider}"
-        return "本地轻量陪聊 · 尚未连接 AI 接口"
+            state = "连接已验证" if getattr(self, "connection_verified", False) else "尚未测试连接"
+            return provider + " · " + self._t(state)
+        return self._t("本地轻量陪聊 · 尚未连接 AI 接口")
 
     def _send_text(self, text: str) -> None:
         self.open_chat()
+        self.behavior.mark_activity()
         if self.waiting:
-            self._append_message("pet", "我还在想上一条呢，等我一下下～")
+            self._append_message("pet", self._t("我还在想上一条呢，等我一下下～"))
             return
         self._append_message("user", text)
         self.history.append({"role": "user", "content": text})
+        if self._local_data_query(text):
+            return
         endpoint = self.settings.get("endpoint", "").strip()
         model = self.settings.get("model", "").strip()
         if not endpoint or not model:
@@ -1237,131 +1524,100 @@ class DesktopPet:
         provider = provider_name_for_endpoint(endpoint)
         if provider in ("OpenAI", "DeepSeek") and not self.api_key:
             if provider == "DeepSeek":
-                prompt = "还没有 DeepSeek API 密钥，请在设置 AI 接口中填写密钥。"
+                prompt = self._t("还没有 DeepSeek API 密钥，请在设置 AI 接口中填写密钥。")
             else:
-                prompt = "还没有 OpenAI API 密钥。ChatGPT Go 订阅不包含 API 用量，请在设置中填写密钥。"
+                prompt = self._t("请先在 AI 接口设置中填写 API 密钥。")
             self._append_message("pet", prompt)
             return
         key = self.api_key
         self.waiting = True
         if self.chat_status is not None:
-            self.chat_status.configure(text="熊大正琢磨呢…")
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}] + self.history[-12:]
+            self.chat_status.configure(text=self._t("正在想一想…"))
+        language_instruction = {
+            "zh-CN": "默认用简体中文回复；如果用户明确要求其他语言，请按其要求。",
+            "en": "Reply in English by default, unless the user explicitly requests another language.",
+            "ms": "Balas dalam Bahasa Melayu secara lalai, kecuali pengguna meminta bahasa lain.",
+        }[getattr(self, "language", "zh-CN")]
+        messages = [{"role": "system", "content": SYSTEM_PROMPT + language_instruction}] + self.history[-12:]
         threading.Thread(target=self._request_ai, args=(endpoint, model, key, messages), daemon=True).start()
+
+    def _local_data_query(self, text: str) -> bool:
+        query = text.lower().strip()
+        temperature_query = any(word in query for word in ("gpu", "温度", "temperature", "suhu"))
+        weather_query = any(word in query for word in ("天气", "气温", "weather", "cuaca"))
+        metrics = (any(word in query for word in ("cpu", "gpu", "fps", "帧率", "系统状态"))
+                   or (temperature_query and not weather_query))
+        if metrics and (query in {"cpu", "gpu", "fps", "系统状态", "温度", "temperature", "suhu"} or any(
+                word in query for word in ("多少", "占用", "当前", "使用率", "温度", "temperature", "suhu",
+                                          "show", "current", "usage", "berapa", "semasa"))):
+            answer = self._context_status_text()
+            if temperature_query:
+                answer += "\n" + "\n".join(temperature_lines(getattr(self, "metrics_snapshot", None), self.language))
+            if temperature_query or query == "cpu":
+                snapshot = getattr(self, "metrics_snapshot", None)
+                cpus = getattr(snapshot, "cpu_temperatures", ())
+                status = getattr(snapshot, "temperature_status", "starting")
+                if status in {"driver_missing", "permission_denied", "driver_busy", "driver_unavailable"} or any(
+                        device.reason in {"driver_missing", "permission_denied", "driver_busy", "driver_unavailable"}
+                        for device in cpus):
+                    answer += "\n" + self._t("CPU 温度不可用：可能缺少 PawnIO 或读取权限；诊断步骤见 README。")
+                elif status not in {"ok", "partial", "starting", "disabled"}:
+                    answer += "\n" + self._t("温度暂不可用；诊断步骤见 README。")
+            self._append_message("pet", answer)
+            return True
+        if weather_query:
+            city = str(self.settings.get("weather_city", "")).strip()
+            if not city:
+                self._append_message("pet", self._t("请先搜索并选择城市"))
+                return True
+            def run():
+                try:
+                    stored = self.settings.get("weather_location")
+                    reading = (fetch_weather_at(WeatherLocation.from_dict(stored), language=self.language)
+                               if stored else fetch_weather(city, language=self.language))
+                    answer = reading.status_text + chr(10) + self._t("更新于") + " " + reading.observed_at + " · Open-Meteo"
+                    self._schedule_ui(lambda: (self._finish_weather(city, reading, None),
+                                               self._append_message("pet", answer)))
+                except (OSError, ValueError) as exc:
+                    detail = str(exc)
+                    self._schedule_ui(lambda: self._append_message("pet", detail))
+            threading.Thread(target=run, name="pawpal-weather-chat", daemon=True).start()
+            return True
+        return False
 
     @staticmethod
     def _offline_reply(text: str) -> str:
-        lower = text.lower()
-        if any(word in lower for word in ("累", "困", "休息", "烦", "压力")):
-            return random.choice((
-                "累了就歇会儿，别跟自己较劲。起来记得喝口水，这主意不错吧？",
-                "瞧你累的，肩膀松松。俺陪你缓一会儿，谁催你我帮你瞪他——开玩笑的。",
-                "先喘口气，等会儿咱再一小步一小步啃难题。",
-            ))
-        if any(word in lower for word in ("摸", "可爱", "喜欢")):
-            return "哼，还挺会挑。摸两下就行，别把俺的熊毛摸秃了。"
-        if any(word in lower for word in ("笑话", "好笑")):
-            return "有只猫去上编程课，老师问它会什么语言。它说：喵 Python！……我是不是该再练练？"
-        if any(word in lower for word in ("代码", "编程", "工作", "学习")):
-            return "把难题切成小块，一口一口啃……呃，我说正经的，告诉俺卡在哪一步。"
-        return random.choice((
-            "俺听着呢，说详细点，别光吊我胃口。",
-            "行，熊大听明白了。你想先唠唠，还是跟俺一起想个办法？",
-            "这事俺先记着。你眼下最想解决的是哪一块？",
-        ))
+        if any(word in text for word in ("累", "困", "休息", "烦", "压力")):
+            return random.choice(("先歇一小会儿吧。我陪你。", "慢慢来，今天已经很努力了。"))
+        if any(word in text for word in ("摸", "可爱", "喜欢")):
+            return "呼噜……（轻轻蹭了蹭你的手）"
+        if any(word in text for word in ("代码", "编程", "工作", "学习")):
+            return "我在这里陪你。需要一起想办法时，可以在设置里连接 AI。"
+        return random.choice(("喵。我听着呢。", "嗯，慢慢说。", "我在。"))
 
-    def _request_ai(self, endpoint: str, model: str, key: str,
-                    messages: list[dict[str, str]]) -> None:
-        base = endpoint.rstrip("/")
-        if base.endswith("/chat/completions"):
-            url = base
-        elif base.endswith("/v1"):
-            url = base + "/chat/completions"
-        elif is_deepseek_endpoint(endpoint):
-            url = base + "/chat/completions"
-        else:
-            url = base + "/v1/chat/completions"
-        payload_data = {
-            "model": model,
-            "messages": messages,
-            "stream": False,
-        }
-        if model.lower().startswith(("gpt-5", "gpt-6")):
-            # Reasoning models reject sampling parameters at non-none effort.
-            payload_data["reasoning_effort"] = "low"
-            payload_data["max_completion_tokens"] = 512
-        elif is_deepseek_endpoint(endpoint):
-            payload_data["reasoning_effort"] = "low"
-            payload_data["max_tokens"] = 512
-        else:
-            payload_data["max_tokens"] = 512
-            payload_data["temperature"] = 0.8
-        payload = json.dumps(payload_data).encode("utf-8")
-        headers = {"Content-Type": "application/json"}
-        if key:
-            headers["Authorization"] = "Bearer " + key
-        request = Request(url, data=payload, headers=headers, method="POST")
+    def _request_ai(self, endpoint: str, model: str, key: str, messages: list[dict[str, str]]) -> None:
         try:
-            with urlopen(request, timeout=50) as response:
-                body = json.loads(response.read().decode("utf-8"))
-            answer = body["choices"][0]["message"]["content"]
-            if isinstance(answer, list):
-                answer = "".join(str(part.get("text", "")) for part in answer if isinstance(part, dict))
-            answer = str(answer).strip() or "我刚刚走神啦，再问我一次好吗？"
-            self.root.after(0, lambda a=answer: self._finish_ai(a, None))
-        except (HTTPError, URLError, TimeoutError, OSError, ValueError, KeyError, IndexError) as exc:
-            detail = "连接失败。请检查接口地址、模型名称和服务是否可用。"
-            if isinstance(exc, HTTPError):
-                if exc.code == 401 and provider_name_for_endpoint(endpoint) == "OpenAI":
-                    detail = (
-                        "API 密钥认证失败。请确认这是 OpenAI Platform 的 API Key；"
-                        "如果你用的是 DeepSeek 密钥，请在设置中切换为 DeepSeek。"
-                    )
-                elif exc.code == 401 and provider_name_for_endpoint(endpoint) == "DeepSeek":
-                    detail = "DeepSeek API 密钥认证失败，请检查密钥和 DeepSeek 账户的 API 访问权限。"
-                else:
-                    detail = f"服务返回 HTTP {exc.code}。请检查接口地址、模型名称和 API 权限。"
-            self.root.after(0, lambda d=detail: self._finish_ai(None, d))
+            answer = request_chat(endpoint, model, key, messages, timeout=50)
+            self._schedule_ui(lambda: self._finish_ai(answer, None))
+        except ChatError as exc:
+            detail = exc.localized(getattr(self, "language", "zh-CN"))
+            self._schedule_ui(lambda: self._finish_ai(None, detail))
 
     def _finish_ai(self, answer: str | None, error: str | None) -> None:
         self.waiting = False
         if answer:
+            self.connection_verified = True
             self.history.append({"role": "assistant", "content": answer})
             self._append_message("pet", answer)
-            if self.settings.get("voice_reply_enabled", True):
-                self._speak_text(answer)
         elif error:
             self._append_message("pet", error)
         if self.chat_status is not None:
-            self.chat_status.configure(text=self._mode_label())
+            self.chat_status.configure(text=self._t(self._mode_label()))
 
     def _finish_local_reply(self, answer: str) -> None:
-        self._append_message("pet", answer)
-        if self.settings.get("voice_reply_enabled", True):
-            self._speak_text(answer)
+        self._append_message("pet", self._t(answer))
 
-    def _speak_text(self, text: str) -> None:
-        self.voice_output.speak(text, on_error=self._handle_speech_error)
 
-    def _handle_speech_error(self, error: str) -> None:
-        def show_error() -> None:
-            if self.speech_warning_shown:
-                return
-            self.speech_warning_shown = True
-            if error == "NO_CHINESE_VOICE":
-                detail = "Windows 没有可用的中文语音，请在语音设置中安装中文语音。"
-            else:
-                detail = "Windows 语音播放失败，请检查语音设置后再试。"
-            parent = self.companion_window or self.root
-            try:
-                messagebox.showinfo("熊大语音", detail, parent=parent)
-            except tk.TclError:
-                pass
-
-        try:
-            self.root.after(0, show_error)
-        except tk.TclError:
-            pass
 
     def open_size_settings(self) -> None:
         if self.size_window is not None:
@@ -1377,7 +1633,7 @@ class DesktopPet:
 
         win = tk.Toplevel(self.root)
         self.size_window = win
-        win.title("熊大 · 桌宠大小")
+        win.title(self._t("猫咪 · 桌宠大小"))
         win_width, win_height = 420, 224
         screen_width, screen_height = win.winfo_screenwidth(), win.winfo_screenheight()
         win.geometry(
@@ -1392,21 +1648,21 @@ class DesktopPet:
         pad.pack(fill="both", expand=True)
         heading = tk.Frame(pad, bg="#f7f4fb")
         heading.pack(fill="x")
-        tk.Label(heading, text="桌宠大小", bg="#f7f4fb", fg=INK,
+        tk.Label(heading, text=self._t("桌宠大小"), bg="#f7f4fb", fg=INK,
                  font=("Microsoft YaHei UI", 13, "bold")).pack(side="left")
         value = tk.DoubleVar(value=round(self.pet_scale * 100))
-        value_label = tk.Label(heading, text=f"{round(self.pet_scale * 100)}%",
+        value_label = tk.Label(heading, text=self._t(f"{round(self.pet_scale * 100)}%"),
                                bg="#f7f4fb", fg=PURPLE,
                                font=("Microsoft YaHei UI", 11, "bold"))
         value_label.pack(side="right")
         tk.Label(
-            pad, text="拖动滑块预览，点击“完成”保存这个大小。",
+            pad, text=self._t("拖动滑块预览，点击“完成”保存这个大小。"),
             bg="#f7f4fb", fg="#82768d", font=("Microsoft YaHei UI", 9),
         ).pack(anchor="w", pady=(5, 8))
 
         def preview(raw_value: str) -> None:
             scale = self._normalize_pet_scale(float(raw_value) / 100)
-            value_label.configure(text=f"{round(scale * 100)}%")
+            value_label.configure(text=self._t(f"{round(scale * 100)}%"))
             if self._size_resize_job is not None:
                 try:
                     self.root.after_cancel(self._size_resize_job)
@@ -1426,9 +1682,9 @@ class DesktopPet:
         slider.pack(fill="x", pady=(0, 2))
         bounds = tk.Frame(pad, bg="#f7f4fb")
         bounds.pack(fill="x")
-        tk.Label(bounds, text="50%", bg="#f7f4fb", fg="#82768d",
+        tk.Label(bounds, text=self._t("50%"), bg="#f7f4fb", fg="#82768d",
                  font=("Microsoft YaHei UI", 8)).pack(side="left")
-        tk.Label(bounds, text="150%", bg="#f7f4fb", fg="#82768d",
+        tk.Label(bounds, text=self._t("150%"), bg="#f7f4fb", fg="#82768d",
                  font=("Microsoft YaHei UI", 8)).pack(side="right")
 
         buttons = tk.Frame(pad, bg="#f7f4fb")
@@ -1445,7 +1701,7 @@ class DesktopPet:
             try:
                 self._save_settings_file()
             except OSError as exc:
-                messagebox.showerror("保存失败", f"无法保存桌宠大小：{exc}", parent=win)
+                messagebox.showerror(self._t("保存失败"), self._t(f"无法保存桌宠大小：{exc}"), parent=win)
                 return
             if self.size_window is win:
                 self.size_window = None
@@ -1457,8 +1713,8 @@ class DesktopPet:
 
         win.protocol("WM_DELETE_WINDOW", finish)
         win.bind("<Escape>", lambda _event: finish())
-        ttk.Button(buttons, text="完成", style="Send.TButton", command=finish).pack(side="right")
-        ttk.Button(buttons, text="恢复默认", style="Pet.TButton",
+        ttk.Button(buttons, text=self._t("完成"), style="Send.TButton", command=finish).pack(side="right")
+        ttk.Button(buttons, text=self._t("恢复默认"), style="Pet.TButton",
                    command=restore_default).pack(side="right", padx=8)
 
     def _apply_queued_pet_scale(self, value: float) -> None:
@@ -1466,260 +1722,34 @@ class DesktopPet:
         self._apply_pet_scale(value)
 
     def open_companion_settings(self) -> None:
-        if self.companion_window is not None:
-            try:
-                if self.companion_window.winfo_exists():
-                    self.companion_window.deiconify()
-                    self.companion_window.lift()
-                    self.companion_window.focus_force()
-                    return
-            except tk.TclError:
-                pass
-            self.companion_window = None
-
-        win = tk.Toplevel(self.root)
-        self.companion_window = win
-        win.title("熊大 · 陪伴与语音设置")
-        win_width, win_height = 500, 430
-        screen_width, screen_height = win.winfo_screenwidth(), win.winfo_screenheight()
-        win.geometry(
-            f"{win_width}x{win_height}+{max(8, (screen_width - win_width) // 2)}"
-            f"+{max(8, (screen_height - win_height) // 2)}"
-        )
-        win.resizable(False, False)
-        win.configure(bg="#f7f4fb")
-        win.attributes("-topmost", True)
-        pad = tk.Frame(win, bg="#f7f4fb", padx=22, pady=16)
-        pad.pack(fill="both", expand=True)
-        tk.Label(pad, text="陪伴与语音", bg="#f7f4fb", fg=INK,
-                 font=("Microsoft YaHei UI", 14, "bold")).pack(anchor="w")
-        tk.Label(
-            pad, text="天气只查询你填写的城市；CPU 和时间状态在本机处理。",
-            bg="#f7f4fb", fg="#82768d", font=("Microsoft YaHei UI", 9),
-        ).pack(anchor="w", pady=(3, 12))
-
-        tk.Label(pad, text="天气城市（留空可关闭天气反应）", bg="#f7f4fb", fg=INK,
-                 font=("Microsoft YaHei UI", 9, "bold")).pack(anchor="w", pady=(2, 4))
-        city_entry = tk.Entry(
-            pad, relief="flat", bd=0, bg="#ffffff", fg=INK,
-            insertbackground=INK, font=("Microsoft YaHei UI", 10),
-            highlightthickness=1, highlightbackground="#e6deef",
-            highlightcolor=PURPLE,
-        )
-        city_entry.pack(fill="x", ipady=6)
-        city_entry.insert(0, str(self.settings.get("weather_city", "")))
-
-        cpu_var = tk.BooleanVar(value=bool(self.settings.get("cpu_reactions", True)))
-        night_var = tk.BooleanVar(value=bool(self.settings.get("night_reactions", True)))
-        voice_var = tk.BooleanVar(value=bool(self.settings.get("voice_reply_enabled", True)))
-        for variable, label in (
-            (cpu_var, "CPU 连续高负载时提醒（本机采样，不上传）"),
-            (night_var, "深夜 00:00–04:59 偶尔提醒休息"),
-            (voice_var, "用中文语音朗读聊天回复"),
-        ):
-            ttk.Checkbutton(pad, text=label, variable=variable).pack(anchor="w", pady=(9, 0))
-
-        tk.Label(
-            pad,
-            text="麦克风先在本机转成文字，再发送给当前聊天模型；不会上传原始录音。语音回复优先使用 Windows 中文男声；天气使用 Open-Meteo。",
-            bg="#f7f4fb", fg="#82768d", wraplength=450, justify="left",
-            font=("Microsoft YaHei UI", 8),
-        ).pack(anchor="w", pady=(12, 8))
-
-        buttons = tk.Frame(pad, bg="#f7f4fb")
-        buttons.pack(fill="x", side="bottom", pady=(8, 0))
-
-        def close() -> None:
-            if self.companion_window is win:
-                self.companion_window = None
-            try:
-                if win.winfo_exists():
-                    win.destroy()
-            except tk.TclError:
-                pass
-
-        win.protocol("WM_DELETE_WINDOW", close)
-        win.bind("<Escape>", lambda _event: close())
-
-        def save() -> None:
-            city = city_entry.get().strip()
-            new_settings = {
-                **self.settings,
-                "weather_city": city,
-                "cpu_reactions": cpu_var.get(),
-                "night_reactions": night_var.get(),
-                "voice_reply_enabled": voice_var.get(),
-            }
-            try:
-                self.settings_path.parent.mkdir(parents=True, exist_ok=True)
-                self.settings_path.write_text(
-                    json.dumps(new_settings, ensure_ascii=False, indent=2), encoding="utf-8"
-                )
-            except OSError as exc:
-                messagebox.showerror("保存失败", f"无法保存陪伴设置：{exc}", parent=win)
-                return
-            city_changed = city != str(self.settings.get("weather_city", "")).strip()
-            self.settings = new_settings
-            if city_changed:
-                self.weather_info = None
-                self.weather_error = None
-                self.context_reactions.reset_weather()
-                self.next_weather_refresh = 0.0
-            self._update_chat_context_status(force=True)
-            close()
-
-        ttk.Button(buttons, text="保存设置", style="Send.TButton", command=save).pack(side="right")
-        ttk.Button(buttons, text="取消", style="Pet.TButton", command=close).pack(side="right", padx=8)
-        ttk.Button(
-            buttons, text="试听语音", style="Pet.TButton",
-            command=lambda: self._speak_text("熊大来报到，听得到俺说话吗？"),
-        ).pack(side="left")
+        from pet_settings import open_preferences
+        open_preferences(self)
 
     def open_settings(self) -> None:
-        if self.settings_window is not None:
-            try:
-                if self.settings_window.winfo_exists():
-                    self.settings_window.deiconify()
-                    self.settings_window.lift()
-                    self.settings_window.focus_force()
-                    return
-            except tk.TclError:
-                pass
-            self.settings_window = None
-
-        win = tk.Toplevel(self.root)
-        self.settings_window = win
-        win.title("熊大 · AI 接口设置")
-        win_width, win_height = 500, 560
-        screen_width, screen_height = win.winfo_screenwidth(), win.winfo_screenheight()
-        win.geometry(
-            f"{win_width}x{win_height}+{max(8, (screen_width - win_width) // 2)}"
-            f"+{max(8, (screen_height - win_height) // 2)}"
-        )
-        win.resizable(False, False)
-        win.configure(bg="#f7f4fb")
-        win.attributes("-topmost", True)
-        pad = tk.Frame(win, bg="#f7f4fb", padx=20, pady=14)
-        pad.pack(fill="both", expand=True)
-        tk.Label(pad, text="连接 AI 接口", bg="#f7f4fb", fg=INK,
-                 font=("Microsoft YaHei UI", 14, "bold")).pack(anchor="w")
-        tk.Label(pad, text="支持 OpenAI、DeepSeek 或自定义兼容服务。",
-                 bg="#f7f4fb", fg="#82768d", font=("Microsoft YaHei UI", 9)).pack(anchor="w", pady=(3, 8))
-
-        buttons = tk.Frame(pad, bg="#f7f4fb")
-        buttons.pack(fill="x", side="bottom", pady=(10, 0))
-
-        provider = tk.StringVar(value=provider_name_for_endpoint(self.settings.get("endpoint", "")))
-        tk.Label(pad, text="服务商", bg="#f7f4fb", fg=INK,
-                 font=("Microsoft YaHei UI", 9, "bold")).pack(anchor="w", pady=(2, 3))
-        provider_box = ttk.Combobox(
-            pad, textvariable=provider, state="readonly",
-            values=("OpenAI", "DeepSeek", "自定义 / Ollama"),
-            font=("Microsoft YaHei UI", 10),
-        )
-        provider_box.pack(fill="x", ipady=4)
-
-        def field(label: str, initial: str, show: str = "") -> tk.Entry:
-            tk.Label(pad, text=label, bg="#f7f4fb", fg=INK,
-                     font=("Microsoft YaHei UI", 9, "bold")).pack(anchor="w", pady=(7, 3))
-            entry = tk.Entry(pad, relief="flat", bd=0, bg="#ffffff", fg=INK,
-                             insertbackground=INK, font=("Microsoft YaHei UI", 10),
-                             highlightthickness=1, highlightbackground="#e6deef",
-                             highlightcolor=PURPLE, show=show)
-            entry.pack(fill="x", ipady=6)
-            entry.insert(0, initial)
-            return entry
-
-        endpoint = field("接口地址", self.settings.get("endpoint", ""))
-        model = field("模型名称", self.settings.get("model", ""))
-        key_entry = field("API 密钥（Windows 加密保存）", self.api_key, show="•")
-
-        def apply_provider(_event: tk.Event | None = None) -> None:
-            presets = {
-                "OpenAI": (OPENAI_ENDPOINT, OPENAI_MODEL),
-                "DeepSeek": (DEEPSEEK_ENDPOINT, DEEPSEEK_MODEL),
-            }
-            selected = provider.get()
-            if selected not in presets:
-                return
-            preset_endpoint, preset_model = presets[selected]
-            endpoint.delete(0, "end")
-            endpoint.insert(0, preset_endpoint)
-            model.delete(0, "end")
-            model.insert(0, preset_model)
-
-        provider_box.bind("<<ComboboxSelected>>", apply_provider)
-        hint = tk.Frame(pad, bg="#f7f4fb")
-        hint.pack(fill="x", anchor="w", pady=(9, 2))
-        tk.Label(
-            hint,
-            text="选择服务商会自动填地址和模型；请用对应服务商的 API Key。",
-            bg="#f7f4fb", fg="#82768d", anchor="w", wraplength=450,
-            font=("Microsoft YaHei UI", 8),
-        ).pack(fill="x", anchor="w")
-        tk.Label(
-            hint, text="密钥留空保存会删除已存密钥。",
-            bg="#f7f4fb", fg="#82768d", anchor="w",
-            font=("Microsoft YaHei UI", 8),
-        ).pack(anchor="w", pady=(2, 0))
-
-        def close() -> None:
-            if self.settings_window is win:
-                self.settings_window = None
-            try:
-                if win.winfo_exists():
-                    win.destroy()
-            except tk.TclError:
-                pass
-
-        win.protocol("WM_DELETE_WINDOW", close)
-        win.bind("<Escape>", lambda _event: close())
-
-        def save() -> None:
-            new_settings = {
-                **self.settings,
-                "endpoint": endpoint.get().strip(),
-                "model": model.get().strip(),
-                "pet_scale": self.pet_scale,
-            }
-            new_api_key = key_entry.get().strip()
-            if not new_settings["endpoint"] or not new_settings["model"]:
-                messagebox.showerror("信息不完整", "请填写接口地址和模型名称。", parent=win)
-                return
-            try:
-                parsed_endpoint = urlsplit(new_settings["endpoint"])
-            except ValueError:
-                parsed_endpoint = None
-            if parsed_endpoint is None or parsed_endpoint.scheme not in ("http", "https") or not parsed_endpoint.netloc:
-                messagebox.showerror("地址格式错误", "接口地址需以 http:// 或 https:// 开头。", parent=win)
-                return
-            try:
-                self._store_api_key(new_api_key)
-                self.settings_path.parent.mkdir(parents=True, exist_ok=True)
-                self.settings_path.write_text(json.dumps(new_settings, ensure_ascii=False, indent=2),
-                                              encoding="utf-8")
-            except (OSError, ValueError) as exc:
-                messagebox.showerror("保存失败", f"无法保存接口设置：{exc}", parent=win)
-                return
-            self.settings = new_settings
-            self.api_key = new_api_key
-            if self.chat_status is not None:
-                self.chat_status.configure(text=self._mode_label())
-            messagebox.showinfo(
-                "设置已保存",
-                f"已保存 {provider_name_for_endpoint(new_settings['endpoint'])} 接口和模型「{new_settings['model']}」。\n"
-                "回到聊天窗口发一条消息即可测试。",
-                parent=win,
-            )
-            close()
-
-        ttk.Button(buttons, text="保存设置", style="Send.TButton", command=save).pack(side="right")
-        ttk.Button(buttons, text="取消", style="Pet.TButton", command=close).pack(side="right", padx=8)
+        from pet_settings import open_ai_settings
+        open_ai_settings(self)
 
 
 if __name__ == "__main__":
-    app = DesktopPet()
+    if any(argument == "--system-diagnostics" or argument.startswith("--system-diagnostics=")
+           for argument in sys.argv[1:]):
+        from pet_diagnostics import run_diagnostics
+        raise SystemExit(run_diagnostics())
+    if any(argument == "--temperature-diagnostics" or argument.startswith("--temperature-diagnostics=")
+           for argument in sys.argv[1:]):
+        from pet_temperature_cli import run_diagnostics
+        raise SystemExit(run_diagnostics())
+    isolated = os.environ.get("PAWPAL_DATA_DIR")
+    instance = SingleInstance("Local\\PawpalCat-QA-" + hashlib.sha256(isolated.encode()).hexdigest()[:16]
+                              if isolated else None)
+    if not instance.acquire():
+        sys.exit(0)
+    app = None
     try:
+        app = DesktopPet()
         app.root.mainloop()
     finally:
-        app._release_layered_surface()
+        if app is not None:
+            app.metrics.stop()
+            app._release_layered_surface()
+        instance.release()

@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import ctypes
 import json
+import math
 import os
 import random
 import time
 from ctypes import wintypes
 from dataclasses import dataclass
 from datetime import datetime
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.parse import urlencode, urlsplit
+from urllib.error import HTTPError, URLError
+from urllib.request import Request
+from pet_network import open_url as urlopen, network_failure, safe_detail
 
 
 WEATHER_TEXT = {
@@ -25,6 +28,90 @@ WEATHER_TEXT = {
     85: "阵雪", 86: "强阵雪", 95: "雷雨", 96: "雷雨伴冰雹", 99: "强雷雨伴冰雹",
 }
 
+WEATHER_TEXT_EN = {
+    0: "Clear", 1: "Mostly clear", 2: "Partly cloudy", 3: "Overcast",
+    45: "Fog", 48: "Rime fog", 51: "Light drizzle", 53: "Drizzle", 55: "Heavy drizzle",
+    56: "Freezing drizzle", 57: "Freezing drizzle", 61: "Light rain", 63: "Rain",
+    65: "Heavy rain", 66: "Freezing rain", 67: "Freezing rain", 71: "Light snow",
+    73: "Snow", 75: "Heavy snow", 77: "Snow grains", 80: "Rain showers",
+    81: "Rain showers", 82: "Heavy showers", 85: "Snow showers", 86: "Heavy snow showers",
+    95: "Thunderstorm", 96: "Thunderstorm with hail", 99: "Severe thunderstorm with hail",
+}
+WEATHER_TEXT_MS = {
+    0: "Cerah", 1: "Hampir cerah", 2: "Separa berawan", 3: "Mendung",
+    45: "Berkabus", 48: "Kabus beku", 51: "Gerimis ringan", 53: "Gerimis",
+    55: "Gerimis lebat", 56: "Gerimis beku", 57: "Gerimis beku", 61: "Hujan ringan",
+    63: "Hujan", 65: "Hujan lebat", 66: "Hujan beku", 67: "Hujan beku",
+    71: "Salji ringan", 73: "Salji", 75: "Salji lebat", 77: "Butiran salji",
+    80: "Hujan singkat", 81: "Hujan singkat", 82: "Hujan singkat lebat",
+    85: "Hujan salji", 86: "Hujan salji lebat", 95: "Ribut petir",
+    96: "Ribut petir dan hujan batu", 99: "Ribut petir kuat dan hujan batu",
+}
+
+
+def _weather_language(language: str) -> str:
+    code = str(language).lower().replace("_", "-").split("-")[0]
+    return code if code in {"zh", "en", "ms"} else "zh"
+
+
+_WEATHER_ERRORS = {
+    "zh": {"city_required": "请先填写城市名称。", "location_not_found": "没有找到该城市，请换一个名称搜索。",
+           "invalid_location": "地点坐标无效，请重新选择城市。", "network_error": "天气服务连接失败，请检查网络后重试。",
+           "timeout": "天气查询超时，请稍后重试。", "service_error": "天气服务暂时不可用，请稍后重试。",
+           "invalid_response": "天气服务返回的数据不完整，请稍后重试。"},
+    "en": {"city_required": "Enter a city name first.", "location_not_found": "No matching city found. Try another name.",
+           "invalid_location": "Invalid location coordinates. Select the city again.", "network_error": "Could not connect to the weather service. Check your connection.",
+           "timeout": "The weather request timed out. Try again later.", "service_error": "The weather service is temporarily unavailable.",
+           "invalid_response": "The weather service returned incomplete data."},
+    "ms": {"city_required": "Masukkan nama bandar dahulu.", "location_not_found": "Bandar tidak ditemui. Cuba nama lain.",
+           "invalid_location": "Koordinat lokasi tidak sah. Pilih bandar semula.", "network_error": "Tidak dapat menyambung ke perkhidmatan cuaca. Semak sambungan anda.",
+           "timeout": "Permintaan cuaca tamat masa. Cuba lagi kemudian.", "service_error": "Perkhidmatan cuaca tidak tersedia buat sementara waktu.",
+           "invalid_response": "Perkhidmatan cuaca mengembalikan data tidak lengkap."},
+}
+
+
+class WeatherError(ValueError):
+    def __init__(self, code: str, language: str = "zh", detail: str = "", status: int | None = None) -> None:
+        self.code = code
+        self.detail = safe_detail(detail)
+        self.status = status
+        message = _WEATHER_ERRORS[_weather_language(language)].get(code, code)
+        if status is not None:
+            message += f" (HTTP {status})"
+        super().__init__(message + ("\n" + self.detail if self.detail else ""))
+
+
+@dataclass(frozen=True)
+class WeatherLocation:
+    id: int | None
+    name: str
+    latitude: float
+    longitude: float
+    country: str = ""
+    admin1: str = ""
+    timezone: str = ""
+
+    @property
+    def label(self) -> str:
+        return " / ".join(dict.fromkeys(part for part in (self.name, self.admin1, self.country) if part))
+
+    def to_dict(self) -> dict[str, object]:
+        return {field: getattr(self, field) for field in self.__dataclass_fields__}
+
+    @classmethod
+    def from_dict(cls, value: dict[str, object]) -> "WeatherLocation":
+        try:
+            latitude, longitude = float(value["latitude"]), float(value["longitude"])
+            if not math.isfinite(latitude) or not math.isfinite(longitude) or not -90 <= latitude <= 90 or not -180 <= longitude <= 180:
+                raise ValueError("invalid coordinates")
+            name = str(value.get("name") or "").strip()
+            if not name:
+                raise ValueError("missing name")
+            return cls(int(value["id"]) if value.get("id") is not None else None, name, latitude, longitude,
+                       str(value.get("country") or ""), str(value.get("admin1") or ""), str(value.get("timezone") or ""))
+        except (ValueError, KeyError, TypeError, OverflowError) as exc:
+            raise WeatherError("invalid_location") from exc
+
 
 @dataclass(frozen=True)
 class WeatherReading:
@@ -32,6 +119,11 @@ class WeatherReading:
     temperature: float
     code: int
     condition: str
+    observed_at: str = ""
+    timezone: str = ""
+    fetched_at: float = 0.0
+    location: WeatherLocation | None = None
+    source: str = "Open-Meteo"
 
     @property
     def status_text(self) -> str:
@@ -60,89 +152,110 @@ class WeatherReading:
         return "weather_rain"
 
 
-def _get_json(url: str) -> dict[str, object]:
-    request = Request(url, headers={"User-Agent": "XiongdaDesktopPet/1.0"})
-    with urlopen(request, timeout=9) as response:
-        data = json.loads(response.read().decode("utf-8"))
+def _get_json(url: str, language: str = "zh") -> dict[str, object]:
+    request = Request(url, headers={"User-Agent": "PawpalCat/5", "Accept": "application/json"})
+    try:
+        with urlopen(request, timeout=15) as response:
+            payload = response.read(1_048_577)
+            if len(payload) > 1_048_576:
+                raise WeatherError("invalid_response", language)
+            data = json.loads(payload.decode("utf-8-sig"))
+    except HTTPError as exc:
+        detail = urlsplit(url).hostname or "Open-Meteo"
+        try:
+            body = json.loads(exc.read(16_384).decode("utf-8-sig"))
+            reason = body.get("reason") or body.get("message") if isinstance(body, dict) else ""
+            if reason:
+                detail += ": " + safe_detail(reason)
+        except (OSError, ValueError, TypeError, UnicodeError):
+            pass
+        if exc.code == 407:
+            detail = "The configured proxy requires authentication. Check its credentials."
+        elif exc.code == 429:
+            detail += ": request limit reached; wait before retrying."
+        raise WeatherError("network_error" if exc.code == 407 else "service_error", language,
+                           detail, exc.code) from exc
+    except (TimeoutError, OSError, URLError) as exc:
+        kind, detail = network_failure(exc)
+        raise WeatherError("timeout" if kind == "timeout" else "network_error", language,
+                           detail) from exc
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise WeatherError("invalid_response", language) from exc
     if not isinstance(data, dict):
-        raise ValueError("天气服务返回了无法识别的数据。")
+        raise WeatherError("invalid_response", language)
     if data.get("error"):
-        raise ValueError(str(data.get("reason") or "天气服务暂时无法查询。"))
+        raise WeatherError("service_error", language, str(data.get("reason") or ""))
     return data
 
 
-def fetch_weather(city: str) -> WeatherReading:
-    """Resolve a user-entered city and fetch current modeled conditions."""
-    city = city.strip()
-    if not city:
-        raise ValueError("请先填写城市名称。")
-    geo_query = urlencode({"name": city, "count": 1, "language": "zh", "format": "json"})
-    geo = _get_json("https://geocoding-api.open-meteo.com/v1/search?" + geo_query)
+def search_weather_locations(query: str, language: str = "zh") -> list[WeatherLocation]:
+    """Return alternatives; callers let the user choose rather than silently taking the first match."""
+    query = str(query or "").strip()
+    language = _weather_language(language)
+    if not query:
+        raise WeatherError("city_required", language)
+    geo_query = urlencode({"name": query, "count": 10, "language": language, "format": "json"})
+    geo = _get_json("https://geocoding-api.open-meteo.com/v1/search?" + geo_query, language)
     results = geo.get("results")
-    if not isinstance(results, list) or not results or not isinstance(results[0], dict):
-        raise ValueError(f"没找到“{city}”，请试试城市名或“城市, 省份”。")
-    location = results[0]
-    latitude = location.get("latitude")
-    longitude = location.get("longitude")
-    if latitude is None or longitude is None:
-        raise ValueError("没有找到该地点的坐标，请检查城市名称。")
+    if not isinstance(results, list):
+        return []
+    locations = []
+    for value in results:
+        if isinstance(value, dict):
+            try:
+                locations.append(WeatherLocation.from_dict(value))
+            except WeatherError:
+                continue
+    return locations
+
+
+def fetch_weather_at(location: WeatherLocation | dict[str, object], language: str = "zh") -> WeatherReading:
+    """Fetch current modeled weather for the saved coordinates, without another geocoding lookup."""
+    language = _weather_language(language)
+    if isinstance(location, dict):
+        try:
+            location = WeatherLocation.from_dict(location)
+        except WeatherError as exc:
+            raise WeatherError("invalid_location", language) from exc
+    if not isinstance(location, WeatherLocation):
+        raise WeatherError("invalid_location", language)
+    try:
+        location = WeatherLocation.from_dict(location.to_dict())
+    except WeatherError as exc:
+        raise WeatherError("invalid_location", language) from exc
     weather_query = urlencode({
-        "latitude": latitude,
-        "longitude": longitude,
+        "latitude": location.latitude,
+        "longitude": location.longitude,
         "current": "temperature_2m,weather_code",
         "temperature_unit": "celsius",
         "timezone": "auto",
     })
-    forecast = _get_json("https://api.open-meteo.com/v1/forecast?" + weather_query)
+    forecast = _get_json("https://api.open-meteo.com/v1/forecast?" + weather_query, language)
     current = forecast.get("current")
     if not isinstance(current, dict):
-        raise ValueError("天气服务没有返回当前天气。")
+        raise WeatherError("invalid_response", language)
     try:
         temperature = float(current["temperature_2m"])
         code = int(current["weather_code"])
     except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError("天气服务返回的数据不完整。") from exc
-    city_name = str(location.get("name") or city)
-    condition = WEATHER_TEXT.get(code, "天气变化")
-    return WeatherReading(city_name, temperature, code, condition)
+        raise WeatherError("invalid_response", language) from exc
+    if not math.isfinite(temperature) or not -100 <= temperature <= 80:
+        raise WeatherError("invalid_response", language)
+    conditions = {"zh": WEATHER_TEXT, "en": WEATHER_TEXT_EN, "ms": WEATHER_TEXT_MS}[language]
+    condition = conditions.get(code, {"zh": "天气变化", "en": "Variable", "ms": "Berubah-ubah"}[language])
+    return WeatherReading(location.name, temperature, code, condition, str(current.get("time") or ""),
+                          str(forecast.get("timezone") or location.timezone), time.time(), location)
 
 
-def _filetime_value(value: wintypes.FILETIME) -> int:
-    return (int(value.dwHighDateTime) << 32) | int(value.dwLowDateTime)
+def fetch_weather(city: str, language: str = "zh") -> WeatherReading:
+    """Compatibility entry point; new settings should search and save a selected location."""
+    locations = search_weather_locations(city, language)
+    if not locations:
+        raise WeatherError("location_not_found", language)
+    return fetch_weather_at(locations[0], language)
 
 
-class CpuMonitor:
-    """Sample local CPU utilization from Windows without extra packages."""
-
-    def __init__(self) -> None:
-        self._get_system_times = None
-        self._previous: tuple[int, int, int] | None = None
-        if os.name == "nt":
-            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-            function = kernel32.GetSystemTimes
-            function.argtypes = [
-                ctypes.POINTER(wintypes.FILETIME),
-                ctypes.POINTER(wintypes.FILETIME),
-                ctypes.POINTER(wintypes.FILETIME),
-            ]
-            function.restype = wintypes.BOOL
-            self._get_system_times = function
-
-    def sample(self) -> float | None:
-        if self._get_system_times is None:
-            return None
-        idle, kernel, user = wintypes.FILETIME(), wintypes.FILETIME(), wintypes.FILETIME()
-        if not self._get_system_times(ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user)):
-            raise ctypes.WinError(ctypes.get_last_error())
-        current = (_filetime_value(idle), _filetime_value(kernel), _filetime_value(user))
-        previous, self._previous = self._previous, current
-        if previous is None:
-            return None
-        idle_delta = max(0, current[0] - previous[0])
-        total_delta = max(0, current[1] - previous[1]) + max(0, current[2] - previous[2])
-        if total_delta <= 0:
-            return None
-        return max(0.0, min(100.0, (1.0 - idle_delta / total_delta) * 100.0))
+from pet_cpu import CpuMonitor
 
 
 @dataclass(frozen=True)

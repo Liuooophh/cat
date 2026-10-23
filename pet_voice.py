@@ -1,9 +1,7 @@
-"""Windows-native Chinese speech output and dictation helpers."""
+"""Windows-native dictation; speech output has been removed."""
 
 from __future__ import annotations
 
-import os
-import queue
 import shutil
 import subprocess
 import threading
@@ -12,29 +10,6 @@ from collections.abc import Callable
 
 _POWERSHELL = shutil.which("powershell.exe") or shutil.which("powershell") or "powershell.exe"
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-
-_SPEAK_SCRIPT = r"""
-$ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName System.Speech
-$synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
-$voices = @($synth.GetInstalledVoices() | Where-Object {
-    $_.Enabled -and
-    $_.VoiceInfo.Culture.Name -eq 'zh-CN'
-})
-$voice = $voices | Where-Object { $_.VoiceInfo.Gender.ToString() -eq 'Male' } | Select-Object -First 1
-if (-not $voice) { $voice = $voices | Select-Object -First 1 }
-if (-not $voice) {
-    [Console]::Error.WriteLine('NO_CHINESE_VOICE')
-    $synth.Dispose()
-    exit 5
-}
-$synth.SelectVoice($voice.VoiceInfo.Name)
-$synth.Rate = 0
-$synth.Volume = 82
-$text = [System.Environment]::GetEnvironmentVariable('XIONGDA_SPEECH_TEXT')
-if ($text) { $synth.Speak($text) }
-$synth.Dispose()
-"""
 
 _RECOGNIZE_SCRIPT = r"""
 $ErrorActionPreference = 'Stop'
@@ -60,79 +35,6 @@ try {
     exit 4
 }
 """
-
-
-class WindowsSpeechOutput:
-    """Speak text locally through the Chinese voice installed in Windows."""
-
-    def __init__(self) -> None:
-        self._queue: queue.Queue[tuple[str, Callable[[str], None] | None] | None] = queue.Queue()
-        self._lock = threading.Lock()
-        self._process: subprocess.Popen[bytes] | None = None
-        self._closed = False
-        self._worker = threading.Thread(target=self._run, name="xiongda-speech", daemon=True)
-        self._worker.start()
-
-    def speak(self, text: str, *, on_error: Callable[[str], None] | None = None) -> None:
-        text = " ".join(text.split())[:1600]
-        if text and not self._closed:
-            self._queue.put((text, on_error))
-
-    def _run(self) -> None:
-        while True:
-            item = self._queue.get()
-            if item is None:
-                return
-            text, on_error = item
-            if self._closed:
-                return
-            env = os.environ.copy()
-            env["XIONGDA_SPEECH_TEXT"] = text
-            failure: str | None = None
-            process: subprocess.Popen[bytes] | None = None
-            try:
-                process = subprocess.Popen(
-                    [_POWERSHELL, "-NoLogo", "-NoProfile", "-NonInteractive",
-                     "-Command", _SPEAK_SCRIPT],
-                    env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                    stderr=subprocess.PIPE, creationflags=_NO_WINDOW,
-                )
-                with self._lock:
-                    self._process = process
-                _, error = process.communicate(timeout=90)
-                if process.returncode:
-                    failure = error.decode("utf-8", errors="replace").strip()
-                    if "NO_CHINESE_VOICE" in failure:
-                        failure = "NO_CHINESE_VOICE"
-                    else:
-                        failure = failure or "WINDOWS_SPEECH_FAILED"
-            except OSError as exc:
-                failure = str(exc)
-            except subprocess.TimeoutExpired:
-                failure = "WINDOWS_SPEECH_TIMEOUT"
-                if process is not None and process.poll() is None:
-                    process.terminate()
-            finally:
-                with self._lock:
-                    self._process = None
-            if failure and on_error is not None:
-                try:
-                    on_error(failure)
-                except Exception:
-                    pass
-
-    def close(self) -> None:
-        self._closed = True
-        with self._lock:
-            process = self._process
-        if process is not None and process.poll() is None:
-            process.terminate()
-        while True:
-            try:
-                self._queue.get_nowait()
-            except queue.Empty:
-                break
-        self._queue.put(None)
 
 
 class WindowsSpeechInput:

@@ -1,0 +1,70 @@
+Pawpal temperature integration third-party notices
+=================================================
+
+All listed upstream libraries are distributed unmodified. Their files remain
+separate from Pawpal source. Copyrights and full license texts are retained in
+licenses/. The NuGet manifests and packages.lock.json record exact source commits
+and distribution hashes. No LibreHardwareMonitor GUI or PawnIO installer ships.
+
+LibreHardwareMonitorLib 0.9.6 -- MPL-2.0
+Copyright LibreHardwareMonitor and Contributors; partial copyright Michael
+Moeller and Open Hardware Monitor Contributors. All rights reserved.
+Source: https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/tree/3d331e3370efb858411f19511373eff65a218701
+License: licenses/LibreHardwareMonitor-MPL-2.0.txt
+
+Embedded signed PawnIO modules, upstream module release 0.1.6 -- LGPL-2.1
+Source and corresponding module release:
+https://github.com/namazso/PawnIO.Modules/releases/tag/0.1.6
+https://github.com/namazso/PawnIO.Modules/tree/0.1.6
+License: licenses/PawnIO-Modules-LGPL-2.1.txt
+Upstream source notice: licenses/PawnIO-Modules-README.txt
+The upstream modules remain embedded in LibreHardwareMonitorLib.dll. Compatible
+modified/relinked LibreHardwareMonitor builds may be used with the application
+by rebuilding from the supplied source with the updated assembly manifest.
+
+BlackSharp.Core 1.0.7, DiskInfoToolkit 1.1.2, RAMSPDToolkit-NDD 1.4.2 -- MPL-2.0
+Copyright Florian K.
+Sources:
+https://github.com/Blacktempel/BlackSharp/tree/c70b735c6cec123ee8a046ac4a0bc6c606f52cf0
+https://github.com/Blacktempel/DiskInfoToolkit/tree/25319eae5781e75bcf141e844ceab2afe94d40ea
+https://github.com/Blacktempel/RAMSPDToolkit/tree/3b47b960e0830fef344624ad5e389675d5f0a1ce
+Licenses: licenses/BlackSharp-MPL-2.0.txt, DiskInfoToolkit-MPL-2.0.txt,
+RAMSPDToolkit-MPL-2.0.txt
+
+HidSharp 2.6.4 -- Apache-2.0
+Copyright 2010-2025 James F. Bellinger.
+Project: https://software.seekye.com/hidsharp
+License and original copyright: licenses/hidsharp-LICENSE.txt
+
+System.Memory 4.6.3, System.Buffers 4.6.1, System.Numerics.Vectors 4.6.1,
+System.Runtime.CompilerServices.Unsafe 6.1.2,
+System.Threading.AccessControl 10.0.3, System.Security.AccessControl 6.0.0,
+System.Security.Principal.Windows 5.0.0 -- MIT
+Copyright Microsoft Corporation. All rights reserved.
+License: licenses/Microsoft-MIT.txt
+Sources/revisions: the corresponding repository records in packages.lock.json.
+System.Management is a system .NET Framework assembly and is not redistributed.
+
+Python.NET 3.0.5 -- MIT
+Copyright (c) 2006-2021 the contributors of the Python.NET project.
+Source: https://github.com/pythonnet/pythonnet/tree/v3.0.5
+License: licenses/Python.NET-MIT.txt
+
+clr-loader 0.2.7.post0 -- MIT
+Copyright Benedikt Reinartz.
+Source: https://github.com/pythonnet/clr-loader/tree/v0.2.7
+License: licenses/clr-loader-MIT.txt
+
+cffi 2.0.0 -- MIT No Attribution (MIT-0)
+Copyright Armin Rigo, Maciej Fijalkowski and other contributors listed in
+licenses/cffi-AUTHORS.txt.
+Source: https://github.com/python-cffi/cffi/tree/v2.0.0
+License: licenses/cffi-MIT.txt
+
+pycparser 2.22 -- BSD-3-Clause
+Copyright Eli Bendersky.
+Source: https://github.com/eliben/pycparser/tree/release_v2.22
+License: licenses/pycparser-BSD.txt
+
+Pawpal does not restrict modification or reverse engineering of these LGPL
+components for debugging modifications. Use compatible API/architecture builds.

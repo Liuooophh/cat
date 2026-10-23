@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "library_version": "0.9.6",
+  "runtime": "netfx",
+  "target_framework": "net472",
+  "runtime_identifier": "win-x64",
+  "architecture": "x64",
+  "minimum_framework_release": 528040,
+  "files": [
+    {
+      "path": "LibreHardwareMonitorLib.dll",
+      "sha256": "6ebc194316536ba61af5be24508ad9fcbb2ecc685e716c12e787c79530f66bf0",
+      "package": "LibreHardwareMonitorLib",
+      "version": "0.9.6"
+    },
+    {
+      "path": "BlackSharp.Core.dll",
+      "sha256": "cafb93afcc8d8a367e21f619673d05c06887d8964867fed1371f02ded1cd3e23",
+      "package": "BlackSharp.Core",
+      "version": "1.0.7"
+    },
+    {
+      "path": "DiskInfoToolkit.dll",
+      "sha256": "1acbf51b3c10c51c986cf43021680d34a2e38d9a5ba652bcfa9a1b5f7fc09800",
+      "package": "DiskInfoToolkit",
+      "version": "1.1.2"
+    },
+    {
+      "path": "HidSharp.dll",
+      "sha256": "d86690efde30ea9179f669320f39148853793b743a98b531afeaf30598e22f54",
+      "package": "HidSharp",
+      "version": "2.6.4"
+    },
+    {
+      "path": "RAMSPDToolkit-NDD.dll",
+      "sha256": "b6882354c7c8ec186617e421507743dbfae09c5c1fc24cef76a1d0c0c26651de",
+      "package": "RAMSPDToolkit-NDD",
+      "version": "1.4.2"
+    },
+    {
+      "path": "System.Memory.dll",
+      "sha256": "d5e8e4866f9cfa66f7765660f84b210198893e55335487afe5ebda342c0e913d",
+      "package": "System.Memory",
+      "version": "4.6.3"
+    },
+    {
+      "path": "System.Buffers.dll",
+      "sha256": "2d78d770c9cb997199154ae8c018b9f1d1efbc86729f7264dde6dbad2a12cac3",
+      "package": "System.Buffers",
+      "version": "4.6.1"
+    },
+    {
+      "path": "System.Numerics.Vectors.dll",
+      "sha256": "20c2fa81b8c70d651099d762954f285fd4f942e63b2d7217c145dab8d4b2f4c9",
+      "package": "System.Numerics.Vectors",
+      "version": "4.6.1"
+    },
+    {
+      "path": "System.Runtime.CompilerServices.Unsafe.dll",
+      "sha256": "08cbd7278b66f1e68425a82d4b97181a4130d93e3dd91831407aba7212ccdacf",
+      "package": "System.Runtime.CompilerServices.Unsafe",
+      "version": "6.1.2"
+    },
+    {
+      "path": "System.Threading.AccessControl.dll",
+      "sha256": "5e3a3902f04f840c0fc1f9c2f249f804f6cfdf7901b2e06778bc2a4603ae4694",
+      "package": "System.Threading.AccessControl",
+      "version": "10.0.3"
+    },
+    {
+      "path": "System.Security.AccessControl.dll",
+      "sha256": "ff14c5f628b9a6798d173aefbba0a43d61e66f715108e2576ac0d3dfab9071d0",
+      "package": "System.Security.AccessControl",
+      "version": "6.0.0"
+    },
+    {
+      "path": "System.Security.Principal.Windows.dll",
+      "sha256": "b4d8e15adc235d0e858e39b5133e5d00a4baa8c94f4f39e3b5e791b0f9c0c806",
+      "package": "System.Security.Principal.Windows",
+      "version": "5.0.0"
+    }
+  ]
+}

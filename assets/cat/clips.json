@@ -1,0 +1,87 @@
+{
+  "format_version": 2,
+  "cell_size": [
+    320,
+    300
+  ],
+  "ground_y": 282,
+  "fps": 24,
+  "source_package": "cat-assets.zip",
+  "clips": {
+    "idle": {
+      "fps": 24,
+      "loop": true,
+      "source_facing": "front",
+      "frame_count": 240,
+      "play_range": [
+        0,
+        240
+      ],
+      "loop_blend_frames": 3
+    },
+    "walk": {
+      "fps": 24,
+      "loop": true,
+      "source_facing": "left",
+      "frame_count": 240,
+      "play_range": [
+        0,
+        240
+      ],
+      "stages": {
+        "enter": [
+          0,
+          103
+        ],
+        "loop": [
+          103,
+          147
+        ],
+        "exit": [
+          147,
+          240
+        ]
+      },
+      "movement_range": [
+        72,
+        160
+      ],
+      "loop_blend_frames": 3
+    },
+    "groom": {
+      "fps": 24,
+      "loop": false,
+      "source_facing": "front",
+      "frame_count": 240,
+      "play_range": [
+        0,
+        225
+      ]
+    },
+    "sleep": {
+      "fps": 24,
+      "loop": true,
+      "source_facing": "left",
+      "frame_count": 240,
+      "play_range": [
+        0,
+        240
+      ],
+      "stages": {
+        "enter": [
+          0,
+          132
+        ],
+        "loop": [
+          132,
+          178
+        ],
+        "exit": [
+          178,
+          240
+        ]
+      },
+      "loop_blend_frames": 3
+    }
+  }
+}
