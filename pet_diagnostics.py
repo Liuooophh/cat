@@ -13,6 +13,27 @@ from urllib.request import Request
 from pet_context import CpuMonitor, search_weather_locations, fetch_weather_at
 from pet_network import build_network_opener, network_failure
 from pet_temperature import default_log_dir
+from pet_presentation import AnimationController
+
+
+def animation_report():
+    """Exercise the actual bundled videos and native decoder without a GUI."""
+    root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    animation = AnimationController(root / "assets/cat")
+    try:
+        clips = {}
+        for state, spec in animation.motion_specs.items():
+            first = animation.frame_at_index(state, spec.play_range[0])
+            last = animation.frame_at_index(state, spec.play_range[1] - 1)
+            returned = animation.frame_at_index(state, spec.play_range[0])
+            if first.tobytes() != returned.tobytes():
+                raise RuntimeError(f"Video seek verification failed: {state}")
+            clips[state] = {"frames": spec.frame_count, "fps": spec.fps,
+                            "size": list(first.size), "alpha_range": list(first.getchannel("A").getextrema()),
+                            "last_frame_decoded": last.size == first.size}
+        return {"status": "ok", "format": "mp4-color-alpha", "clips": clips}
+    finally:
+        animation.close()
 
 
 def run_diagnostics(argv=None):
@@ -23,6 +44,10 @@ def run_diagnostics(argv=None):
     report = {"frozen": bool(getattr(sys, "frozen", False)), "executable": sys.executable,
               "actual_windows_cpu": [], "weather": {}, "deepseek_network": {},
               "credentials_read": False, "ai_generation_requests": 0, "gui_or_autostart": False}
+    try:
+        report["animation"] = animation_report()
+    except Exception as exc:
+        report["animation"] = {"status": "error", "detail": str(exc)}
     monitor = CpuMonitor()
     try:
         for index in range(3):

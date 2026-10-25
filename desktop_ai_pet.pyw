@@ -28,7 +28,7 @@ from pet_i18n import LANGUAGES, localize, normalize_language, weather_condition
 from pet_metrics import MetricsMonitor
 from pet_startup import StartupManager, SingleInstance
 from pet_tray import temperature_lines, temperature_tooltip, temperature_icon, representative_values
-from pet_visual_effects import sleep_breath, draw_sleep_zzz
+from pet_visual_effects import draw_sleep_zzz
 from pet_behavior import PetAction, PetBehaviorManager
 from pet_dialogue import DialogueManager
 from pet_motion import MotionPlayer
@@ -175,6 +175,7 @@ def rounded_polygon(canvas: tk.Canvas, x1: int, y1: int, x2: int, y2: int,
 class DesktopPet:
     def __init__(self) -> None:
         self.root = tk.Tk(className="TuanziPet")
+        self.root.iconbitmap(default=str(resource_path("pet_icon.ico")))
         self.root.title(self._t(APP_NAME))
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
@@ -242,16 +243,14 @@ class DesktopPet:
         self.settings_window: tk.Toplevel | None = None
         self.size_window: tk.Toplevel | None = None
         self.dialogue = DialogueManager()
-        walk_spec = self.animation.motion_spec("walk")
-        sleep_spec = self.animation.motion_spec("sleep")
-        durations = {"groom": self.animation.clip_duration("groom") or 9.1667}
-        if walk_spec.stages:
-            # Request the outro during the first or second stable gait cycle.
-            enter, loop = walk_spec.stage_duration("enter"), walk_spec.stage_duration("loop")
-            durations["walk"] = (enter + loop * 0.25, enter + loop * 1.25)
-        manual_walk = (walk_spec.stage_duration("enter") + walk_spec.stage_duration("loop") * 0.5
-                       if walk_spec.stages else 4.0)
-        self.behavior = PetBehaviorManager(state_duration=durations, manual_walk_duration=manual_walk)
+        durations = {
+            state: self.animation.clip_duration(state)
+            for state in ("click", "eat", "groom")
+        }
+        self.behavior = PetBehaviorManager(
+            state_duration={state: duration for state, duration in durations.items()
+                            if duration is not None},
+        )
         self.motion = MotionPlayer(self.animation.motion_specs, now=self.behavior.state_started,
                                    idle_entries=self.animation.idle_entries)
         self.motion_pose = self.motion.sample(self.behavior.state_started)
@@ -490,7 +489,6 @@ class DesktopPet:
         if sleeping:
             if getattr(self, "_last_motion_phase", None) != ("sleep", "loop"):
                 self._sleep_breath_started = now
-            sprite = sleep_breath(sprite, now - self._sleep_breath_started, mirror)
         self._last_motion_phase = (visual_state, getattr(pose, "phase", "loop"))
         transition = min(1.0, (now - self._transition_started) / getattr(self, "_transition_duration", 0.16))
         transition = max(0.0, transition)
@@ -634,7 +632,8 @@ class DesktopPet:
     def _tray_menu(self):
         import pystray
         items = [pystray.MenuItem(self._t("和猫咪聊天"), self._tray_open_chat, default=True)]
-        actions = (("走路", "walk"), ("洗脸", "groom"), ("睡觉", "sleep"), ("唤醒", "idle"))
+        actions = (("点击互动", "click"), ("吃猫粮", "eat"), ("洗脸", "groom"),
+                   ("睡觉", "sleep"), ("唤醒", "idle"))
         def action_handler(state):
             def callback(_icon, _item):
                 self._schedule_ui(lambda: self._choose_action(state))
@@ -738,6 +737,7 @@ class DesktopPet:
         self._close_context_menu()
         self.speech_input.stop()
         self.metrics.stop()
+        self.animation.close()
         if getattr(self, "temperature_tray_icon", None) is not None:
             try:
                 self.temperature_tray_icon.stop()
@@ -1034,20 +1034,11 @@ class DesktopPet:
         self._hide_context_bubble()
         self.hover_bubble = False
         frames = self.animation.frames_for(action.state)
-        if action.state in {"walk", "sleep", "groom"}:
+        if action.state in {"click", "eat", "groom", "sleep"}:
             self.sprite_frame_index = 0
         else:
             self.sprite_frame_index = random.randrange(max(1, len(frames)))
         now = time.monotonic()
-        if action.state == "walk":
-            x = self.root.winfo_x()
-            right = max(8, self.root.winfo_screenwidth() - self.window_width - 8)
-            self.walk_direction = (1 if x < 150 else -1 if right - x < 150
-                                   else random.choice((-1, 1)))
-            self._actor_mirror = ((self.walk_direction > 0)
-                                  if self.animation.source_facing("walk") == "left"
-                                  else (self.walk_direction < 0))
-            self.walk_step_time = now
         selected = self.dialogue.choose(action.dialogue, now=now)
         if selected is not None:
             line, duration = selected
@@ -1129,7 +1120,9 @@ class DesktopPet:
         elif state != self.behavior.state:
             self.pending_action = state
             from pet_i18n import tr
-            action_name = {"walk": "走路", "groom": "洗脸", "sleep": "睡觉"}.get(state, state)
+            action_name = {
+                "click": "点击互动", "eat": "吃猫粮", "groom": "洗脸", "sleep": "睡觉",
+            }.get(state, state)
             self.bubble.show(tr("action_queued", self.language, action=self._t(action_name)), 2.0)
             # An infinite sleep must wake before the queued action can run.
             if self.behavior.state == "sleep":
@@ -1148,7 +1141,7 @@ class DesktopPet:
             popup.wm_attributes("-transparentcolor", KEY_COLOR)
         except tk.TclError:
             popup.attributes("-alpha", 0.98)
-        menu_w, menu_h = 300, 435
+        menu_w, menu_h = 300, 482
         x = min(event.x_root, popup.winfo_screenwidth() - menu_w - 8)
         y = min(event.y_root, popup.winfo_screenheight() - menu_h - 8)
         popup.geometry(f"{menu_w}x{menu_h}+{max(0, x)}+{max(0, y)}")
@@ -1161,7 +1154,8 @@ class DesktopPet:
         actions = [
             ("chat", "和猫咪聊天", self.open_chat),
             ("settings", "设置 AI 接口", self.open_settings),
-            ("walk", "走路", lambda: self._choose_action("walk")),
+            ("click", "点击互动", lambda: self._choose_action("click")),
+            ("eat", "吃猫粮", lambda: self._choose_action("eat")),
             ("groom", "洗脸", lambda: self._choose_action("groom")),
             ("sleep", "睡觉", lambda: self._choose_action("sleep")),
             ("wake", "唤醒", lambda: self._choose_action("idle")),
@@ -1751,5 +1745,6 @@ if __name__ == "__main__":
     finally:
         if app is not None:
             app.metrics.stop()
+            app.animation.close()
             app._release_layered_surface()
         instance.release()

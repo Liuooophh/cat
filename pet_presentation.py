@@ -14,6 +14,7 @@ from pathlib import Path
 
 from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageStat
 from pet_motion import ClipSpec
+from pet_video import PackedAlphaVideo, default_video_plugin_path
 
 
 STATE_FPS = {"walk": 10.0, "sleep": 0.7}
@@ -69,6 +70,8 @@ class IdlePoseCycle:
 @dataclass(frozen=True)
 class _Clip:
     paths: tuple[Path, ...]
+    video_path: Path | None
+    frame_count: int
     fps: float | None
     loop: bool
     source_facing: str
@@ -82,7 +85,7 @@ class _ClipFrames(Sequence[Image.Image]):
         self.state = state
 
     def __len__(self) -> int:
-        return len(self.animation._clips[self.state].paths)
+        return self.animation._clips[self.state].frame_count
 
     def __getitem__(self, index: int | slice) -> Image.Image | list[Image.Image]:
         if isinstance(index, slice):
@@ -96,13 +99,11 @@ class _ClipFrames(Sequence[Image.Image]):
 
 
 class AnimationController:
-    """Play timed PNG clips on one fixed canvas, with a bounded decoded-frame cache.
+    """Play fixed-canvas PNG or packed color-and-alpha MP4 animation clips.
 
-    ``clips.json`` supplies ``cell_size``, optional ``ground_y``, and a ``clips``
-    mapping. Each clip uses PNGs in its named subdirectory and declares ``fps``,
-    ``loop`` and ``source_facing``. Exported frames already share the canvas and
-    ground position, so playback never fits individual poses to their bounds.
-    Older assets without a manifest retain their original sizing/pose behavior.
+    The current cat assets use MP4 at runtime.  The existing PNG path remains a
+    compatibility reader for older bundled characters and small unit fixtures.
+    Both formats share the same bounded Pillow-frame cache and motion metadata.
     """
 
     def __init__(self, asset_dir: Path, cell_size: tuple[int, int] = (238, 244),
@@ -114,6 +115,11 @@ class AnimationController:
         self._clips: dict[str, _Clip] = {}
         self.motion_specs: dict[str, ClipSpec] = {}
         self._idle_entries: dict[str, int] | None = None
+        self._configured_idle_entries: dict[str, int] = {}
+        self._video_reader: PackedAlphaVideo | None = None
+        self._video_state: str | None = None
+        self._video_plugin_path = default_video_plugin_path()
+        self.video_mode = False
         manifest_path = asset_dir / "clips.json"
         self.legacy_mode = not manifest_path.is_file()
         if self.legacy_mode:
@@ -122,14 +128,14 @@ class AnimationController:
                     paths = tuple(sorted(folder.glob("*.png")))
                     if paths:
                         self._clips[folder.name] = _Clip(
-                            paths, STATE_FPS.get(folder.name), True, "left")
+                            paths, None, len(paths), STATE_FPS.get(folder.name), True, "left")
         else:
             self._read_manifest(asset_dir, manifest_path)
         if "idle" not in self._clips:
-            raise FileNotFoundError(f"没有找到 {asset_dir / 'idle'} 下的 PNG 角色帧。")
+            raise FileNotFoundError(f"没有找到 {asset_dir} 中的待机动画。")
         for state, clip in self._clips.items():
             self.motion_specs.setdefault(state, ClipSpec(
-                clip.fps or 1.0, len(clip.paths), (0, len(clip.paths)),
+                clip.fps or 1.0, clip.frame_count, (0, clip.frame_count),
                 clip.loop, clip.source_facing))
         self.frames: dict[str, Sequence[Image.Image]] = {
             state: _ClipFrames(self, state) for state in self._clips
@@ -147,6 +153,12 @@ class AnimationController:
         self.ground_y = manifest.get("ground_y", self.cell_size[1])
         if not isinstance(self.ground_y, int) or not 0 <= self.ground_y <= size[1]:
             raise ValueError("clips.json 的 ground_y 必须位于画布高度范围内。")
+        asset_format = manifest.get("asset_format", "png")
+        if asset_format not in {"png", "mp4-color-alpha"}:
+            raise ValueError("clips.json 的 asset_format 不受支持。")
+        self.video_mode = asset_format == "mp4-color-alpha"
+        if self.video_mode and manifest.get("video_layout") != "color-alpha-side-by-side":
+            raise ValueError("clips.json 的 MP4 透明通道布局不受支持。")
         clips = manifest.get("clips")
         if not isinstance(clips, dict):
             raise ValueError("clips.json 缺少 clips 动作列表。")
@@ -164,22 +176,38 @@ class AnimationController:
             facing = metadata.get("source_facing", "left")
             if not isinstance(loop, bool) or facing not in {"left", "right", "front"}:
                 raise ValueError(f"{state} 动作的 loop 或 source_facing 配置无效。")
-            paths = tuple(sorted((asset_dir / state).glob("*.png")))
-            if not paths:
-                raise FileNotFoundError(f"{state} 动作文件夹内没有 PNG 帧。")
-            expected = metadata.get("frame_count", metadata.get("frames", len(paths)))
-            if isinstance(expected, bool) or not isinstance(expected, int) or expected != len(paths):
-                raise ValueError(f"{state} 帧数与清单不一致。")
-            if "frame_count" in metadata or "frames" in metadata:
-                if [p.name for p in paths] != [f"{i:04d}.png" for i in range(1, expected + 1)]:
-                    raise ValueError(f"{state} 帧文件必须从 0001.png 连续编号。")
+            video_path: Path | None = None
+            if self.video_mode:
+                filename = metadata.get("file")
+                if (not isinstance(filename, str) or not filename
+                        or Path(filename).name != filename or Path(filename).suffix.lower() != ".mp4"):
+                    raise ValueError(f"{state} 动作必须指定同目录下的 MP4 文件。")
+                video_path = asset_dir / filename
+                if not video_path.is_file():
+                    raise FileNotFoundError(f"{state} 动作视频不存在：{video_path}")
+                paths: tuple[Path, ...] = ()
+                expected = metadata.get("frame_count")
+                if (isinstance(expected, bool) or not isinstance(expected, int)
+                        or expected <= 0):
+                    raise ValueError(f"{state} 动作的 frame_count 必须是正整数。")
+            else:
+                paths = tuple(sorted((asset_dir / state).glob("*.png")))
+                if not paths:
+                    raise FileNotFoundError(f"{state} 动作文件夹内没有 PNG 帧。")
+                expected = metadata.get("frame_count", metadata.get("frames", len(paths)))
+                if (isinstance(expected, bool) or not isinstance(expected, int)
+                        or expected != len(paths)):
+                    raise ValueError(f"{state} 帧数与清单不一致。")
+                if "frame_count" in metadata or "frames" in metadata:
+                    if [p.name for p in paths] != [f"{i:04d}.png" for i in range(1, expected + 1)]:
+                        raise ValueError(f"{state} 帧文件必须从 0001.png 连续编号。")
             def frame_range(value: object, label: str) -> tuple[int, int]:
                 if (not isinstance(value, (list, tuple)) or len(value) != 2
                         or any(not isinstance(n, int) or isinstance(n, bool) for n in value)
-                        or not 0 <= value[0] < value[1] <= len(paths)):
+                        or not 0 <= value[0] < value[1] <= expected):
                     raise ValueError(f"{state} 的 {label} 必须是有效的左闭右开帧范围。")
                 return (value[0], value[1])
-            play_range = frame_range(metadata.get("play_range", [0, len(paths)]), "play_range")
+            play_range = frame_range(metadata.get("play_range", [0, expected]), "play_range")
             stages_data = metadata.get("stages", {})
             if not isinstance(stages_data, dict):
                 raise ValueError(f"{state} 的 stages 必须是对象。")
@@ -200,9 +228,24 @@ class AnimationController:
             if (not isinstance(blend, int) or isinstance(blend, bool)
                     or not 0 <= blend < loop_range[1] - loop_range[0]):
                 raise ValueError(f"{state} 的 loop_blend_frames 无效。")
-            self._clips[state] = _Clip(paths, float(fps), loop, facing)
-            self.motion_specs[state] = ClipSpec(float(fps), len(paths), play_range, loop,
+            idle_entry = metadata.get("idle_entry_frame")
+            if idle_entry is not None:
+                if (isinstance(idle_entry, bool) or not isinstance(idle_entry, int)
+                        or idle_entry < 0):
+                    raise ValueError(f"{state} 的 idle_entry_frame 必须是非负整数。")
+                if state != "idle":
+                    self._configured_idle_entries[state] = idle_entry
+            self._clips[state] = _Clip(
+                paths, video_path, expected, float(fps), loop, facing,
+            )
+            self.motion_specs[state] = ClipSpec(float(fps), expected, play_range, loop,
                                                 facing, stages, movement, blend)
+        idle_spec = self.motion_specs.get("idle")
+        if idle_spec is not None:
+            first, end = idle_spec.play_range
+            for state, index in self._configured_idle_entries.items():
+                if not first <= index < end:
+                    raise ValueError(f"{state} 的 idle_entry_frame 不在待机播放范围内。")
 
     @property
     def cached_frame_count(self) -> int:
@@ -220,17 +263,50 @@ class AnimationController:
         if mirror:
             frame = self._load_frame(state, index).transpose(Image.Transpose.FLIP_LEFT_RIGHT)
         else:
-            path = self._clips[state].paths[index]
-            with Image.open(path) as source:
-                frame = source.convert("RGBA")
-            if self.legacy_mode:
-                frame = self._fit(frame)
-            elif frame.size != self.cell_size:
-                raise ValueError(f"{path} 尺寸为 {frame.size}，预期为 {self.cell_size}。")
+            clip = self._clips[state]
+            if clip.video_path is not None:
+                frame = self._video_frame(state, index)
+            else:
+                path = clip.paths[index]
+                with Image.open(path) as source:
+                    frame = source.convert("RGBA")
+                if self.legacy_mode:
+                    frame = self._fit(frame)
+                elif frame.size != self.cell_size:
+                    raise ValueError(f"{path} 尺寸为 {frame.size}，预期为 {self.cell_size}。")
         self._cache[key] = frame
         while len(self._cache) > self.cache_capacity:
             self._cache.popitem(last=False)
         return frame
+
+    def _video_frame(self, state: str, index: int) -> Image.Image:
+        clip = self._clips[state]
+        assert clip.video_path is not None
+        if self._video_reader is None or self._video_state != state:
+            self.close()
+            reader = PackedAlphaVideo(
+                clip.video_path, self._video_plugin_path, expected_size=self.cell_size,
+            )
+            if reader.frame_count != clip.frame_count:
+                reader.close()
+                raise ValueError(
+                    f"{clip.video_path} 帧数为 {reader.frame_count}，预期为 {clip.frame_count}。"
+                )
+            if clip.fps is not None and abs(reader.fps - clip.fps) > 0.01:
+                reader.close()
+                raise ValueError(
+                    f"{clip.video_path} 帧率为 {reader.fps:g}，预期为 {clip.fps:g}。"
+                )
+            self._video_reader = reader
+            self._video_state = state
+        return self._video_reader.frame(index)
+
+    def close(self) -> None:
+        """Release the active native video decoder without clearing cached frames."""
+        reader, self._video_reader = self._video_reader, None
+        self._video_state = None
+        if reader is not None:
+            reader.close()
 
     def _fit(self, source: Image.Image) -> Image.Image:
         max_w, max_h = self.cell_size
@@ -264,15 +340,20 @@ class AnimationController:
 
     @property
     def idle_entries(self) -> dict[str, int]:
-        """Find one fixed return pose per action, without changing frame layout.
+        """Return the fixed idle pose used after each complete action.
 
-        Small premultiplied thumbnails compare color and silhouette once at
-        startup. Rendering still uses the untouched, fixed-size PNG canvases;
-        there is no per-frame fitting or bounding-box alignment.
+        MP4 assets declare this directly so startup never scans whole videos.
+        Older PNG manifests compare small premultiplied thumbnails once.
         """
         if self._idle_entries is None:
             idle = self.motion_spec("idle")
             first, end = idle.play_range
+            if self.video_mode or self._configured_idle_entries:
+                self._idle_entries = {
+                    state: self._configured_idle_entries.get(state, first)
+                    for state in self.motion_specs if state != "idle"
+                }
+                return dict(self._idle_entries)
 
             def thumbnail(state: str, index: int) -> Image.Image:
                 with Image.open(self._clips[state].paths[index]) as source:
@@ -300,7 +381,7 @@ class AnimationController:
 
     def frame_at_index(self, state: str, index: int, *, mirror: bool = False) -> Image.Image:
         key = self._clip_key(state)
-        if not 0 <= index < len(self._clips[key].paths):
+        if not 0 <= index < self._clips[key].frame_count:
             raise IndexError("animation frame index out of range")
         return self._load_frame(key, index, mirror)
 

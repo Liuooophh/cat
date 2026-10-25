@@ -17,6 +17,7 @@ def specs():
         "walk": ClipSpec(10, 60, (0, 60), stages={"enter": (0, 20), "loop": (20, 40), "exit": (40, 60)},
                          movement_range=(10, 45), loop_blend_frames=3),
         "sleep": ClipSpec(10, 60, (0, 60), stages={"enter": (0, 20), "loop": (20, 40), "exit": (40, 60)}),
+        "eat": ClipSpec(10, 60, (0, 60), loop=False),
         "groom": ClipSpec(10, 60, (0, 50), loop=False),
     }
 
@@ -105,21 +106,23 @@ class MotionTests(unittest.TestCase):
         self.assertEqual((pose.state, pose.frame_index), ("idle", 7))
         self.assertEqual(player.sample(5.3).frame_index, 9)
 
-    def test_manual_walk_completes_exactly_one_loop_then_exit(self):
-        behavior = PetBehaviorManager(manual_walk_duration=3)
+    def test_manual_eat_plays_once_then_returns_to_idle(self):
+        behavior = PetBehaviorManager(state_duration={"eat": 6})
         player = MotionPlayer(specs())
-        behavior.manual_action("walk", now=0)
+        behavior.manual_action("eat", now=0)
         phases = []
         for moment in range(61):
             now = moment / 10
             behavior.update(now=now)
             pose = player.update(behavior.state, now, started_at=behavior.state_started)
             phases.append(pose.phase)
-        self.assertEqual(phases[0], "enter")
-        self.assertEqual(phases[20:40], ["loop"] * 20)
-        self.assertEqual(phases[40:60], ["exit"] * 20)
+        self.assertEqual(phases, ["once"] * 61)
         self.assertEqual(pose.frame_index, 59)
-        self.assertEqual(player.update("idle", 6.1).state, "idle")
+        behavior.update(now=6.1)
+        self.assertEqual(
+            player.update(behavior.state, 6.1, started_at=behavior.state_started).state,
+            "idle",
+        )
 
     def test_sleep_continues_for_hours_without_a_wake_request(self):
         player = MotionPlayer(specs())

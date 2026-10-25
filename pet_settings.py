@@ -5,11 +5,83 @@ import sys
 import threading
 import time
 import tkinter as tk
+from pathlib import Path
 from tkinter import messagebox, ttk
 
 from pet_ai import ChatError, normalize_chat_url, test_connection, migrate_model_name, provider_name, legacy_credential_target
 from pet_context import WeatherError, WeatherLocation, search_weather_locations, fetch_weather_at
 from pet_i18n import LANGUAGES, weather_condition
+
+
+PAGE = "#f7f4fb"
+CARD = "#ffffff"
+INK = "#493d50"
+MUTED = "#82768d"
+ACCENT = "#7561a8"
+
+
+def _settings_style(win):
+    """Scope the settings palette so opening settings first looks intentional."""
+    from PIL import Image, ImageDraw, ImageTk
+
+    style = ttk.Style(win)
+    if style.theme_use() != "clam":
+        style.theme_use("clam")
+    font = ("Microsoft YaHei UI", 10)
+    style.configure("Settings.TFrame", background=PAGE)
+    style.configure("SettingsCard.TFrame", background=CARD)
+    style.configure("Settings.TLabel", background=PAGE, foreground=INK, font=font)
+    style.configure("SettingsCard.TLabel", background=CARD, foreground=INK, font=font)
+    style.configure("Settings.TNotebook", background=PAGE, borderwidth=0,
+                    bordercolor=PAGE, lightcolor=PAGE, darkcolor=PAGE, tabmargins=0)
+    style.layout("Settings.TNotebook.Tab", [])
+    style.configure("SettingsNav.TButton", background=PAGE, foreground=MUTED,
+                    font=font, padding=(20, 10), borderwidth=0)
+    style.configure("SettingsNavActive.TButton", background="#eae3f5", foreground=ACCENT,
+                    font=("Microsoft YaHei UI", 10, "bold"), padding=(20, 10), borderwidth=0)
+    style.map("SettingsNav.TButton", background=[("active", "#f0eaf8")])
+    style.map("SettingsNavActive.TButton", background=[("active", "#e3d9f2")])
+    style.configure("Settings.Vertical.TScrollbar", background="#d7cce7", troughcolor=PAGE,
+                    borderwidth=0, width=8, lightcolor="#d7cce7", darkcolor="#d7cce7")
+    style.layout("Settings.Vertical.TScrollbar", [("Vertical.Scrollbar.trough", {
+        "sticky": "ns", "children": [("Vertical.Scrollbar.thumb", {"expand": True, "sticky": "nswe"})],
+    })])
+    style.configure("Settings.TButton", font=font, padding=(16, 9), borderwidth=0,
+                    background="#eee8f7", foreground=INK)
+    style.map("Settings.TButton", background=[("active", "#e3d9f2"), ("disabled", "#efedf2")],
+              foreground=[("disabled", "#a69daa")])
+    style.configure("SettingsPrimary.TButton", font=("Microsoft YaHei UI", 10, "bold"),
+                    padding=(20, 9), borderwidth=0, background=ACCENT, foreground="white")
+    style.map("SettingsPrimary.TButton", background=[("active", "#665293"), ("disabled", "#c0b6d3")])
+    for name in ("Settings.TEntry", "Settings.TCombobox"):
+        style.configure(name, font=font, padding=(10, 8), foreground=INK,
+                        fieldbackground=CARD, background=CARD, bordercolor="#e5deed",
+                        lightcolor=CARD, darkcolor=CARD, arrowcolor=ACCENT)
+        style.map(name, bordercolor=[("focus", "#a695c4")],
+                  fieldbackground=[("readonly", CARD)], selectbackground=[("!focus", CARD)],
+                  selectforeground=[("!focus", INK)])
+    win.option_add("*TCombobox*Listbox.font", font)
+    win.option_add("*TCombobox*Listbox.background", CARD)
+    win.option_add("*TCombobox*Listbox.foreground", INK)
+    if "PawpalSwitch" not in style.element_names():
+        images = []
+        for color in ("#d6cedf", ACCENT, "#c9bdd9", "#655094"):
+            image = Image.new("RGBA", (42 * 3, 24 * 3))
+            draw = ImageDraw.Draw(image)
+            draw.rounded_rectangle((3, 3, 123, 69), radius=33, fill=color)
+            selected = color in {ACCENT, "#655094"}
+            x = 23 if selected else 3
+            draw.ellipse((x * 3, 3 * 3, (x + 16) * 3, 19 * 3), fill="white")
+            images.append(ImageTk.PhotoImage(image.resize((42, 24), Image.Resampling.LANCZOS), master=win))
+        win._root()._settings_switch_images = images
+        style.element_create("PawpalSwitch", "image", images[0],
+                             ("selected", "active", images[3]),
+                             ("selected", images[1]), ("active", images[2]), border=0, sticky="")
+    style.layout("SettingsSwitch.TCheckbutton", [("Checkbutton.padding", {"children": [
+        ("PawpalSwitch", {"side": "left", "sticky": ""}),
+    ]})])
+    style.configure("SettingsSwitch.TCheckbutton", background=CARD, padding=(4, 5))
+    style.map("SettingsSwitch.TCheckbutton", background=[("active", CARD)])
 
 
 def _window(app, attribute, title, size):
@@ -30,7 +102,13 @@ def _window(app, attribute, title, size):
     height = min(height, win.winfo_screenheight() - 100)
     win.geometry(f"{width}x{height}+{max(8, (win.winfo_screenwidth()-width)//2)}+30")
     win.minsize(min(width, 560), min(height, 480))
-    win.configure(bg="#f7f4fb")
+    win.configure(bg=PAGE)
+    _settings_style(win)
+    try:
+        root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+        win.iconbitmap(str(root / "pet_icon.ico"))
+    except tk.TclError:
+        pass
     win.attributes("-topmost", True)
     def close():
         if getattr(app, attribute, None) is win:
@@ -43,6 +121,7 @@ def _window(app, attribute, title, size):
 
 
 def _label(parent, app, text, **kwargs):
+    kwargs.setdefault("style", "Settings.TLabel")
     return ttk.Label(parent, text=app._t(text), wraplength=530, **kwargs)
 
 
@@ -105,61 +184,132 @@ def save_ai_configuration(app, url: str, model_name: str, api_key: str, profiles
 
 
 def open_preferences(app):
-    win = _window(app, "companion_window", "基础设置", (620, 720))
+    win = _window(app, "companion_window", "基础设置", (660, 780))
     if win is None:
         return
     L = app._t
-    pad = ttk.Frame(win, padding=18)
+    pad = ttk.Frame(win, padding=(24, 20), style="Settings.TFrame")
     pad.pack(fill="both", expand=True)
-    language_row = ttk.Frame(pad)
-    language_row.pack(fill="x", pady=(0, 14))
+    header = ttk.Frame(pad, style="Settings.TFrame")
+    header.pack(fill="x", pady=(0, 18))
+    from PIL import Image, ImageTk
+    resource_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    with Image.open(resource_root / "pet_icon.png") as icon:
+        win._header_icon = ImageTk.PhotoImage(
+            icon.convert("RGBA").resize((56, 56), Image.Resampling.LANCZOS), master=win,
+        )
+    ttk.Label(header, image=win._header_icon, style="Settings.TLabel").pack(side="right")
+    _label(header, app, "基础设置", font=("Microsoft YaHei UI", 19, "bold")).pack(anchor="w")
+    _label(header, app, "让猫咪按你的习惯陪伴。", foreground=MUTED).pack(anchor="w", pady=(4, 0))
+    language_row = ttk.Frame(pad, style="Settings.TFrame")
+    language_row.pack(fill="x", pady=(0, 18))
     _label(language_row, app, "语言").pack(side="left", padx=(0, 18))
-    language = ttk.Combobox(language_row, state="readonly", values=list(LANGUAGES.values()), width=24)
+    language = ttk.Combobox(language_row, state="readonly", values=list(LANGUAGES.values()),
+                            width=22, style="Settings.TCombobox")
     language.current(list(LANGUAGES).index(app.language))
     language.pack(side="left")
     def change_language(_event=None):
         app._apply_language(list(LANGUAGES)[language.current()])
     language.bind("<<ComboboxSelected>>", change_language)
 
-    tabs = ttk.Notebook(pad)
+    navigation = ttk.Frame(pad, style="Settings.TFrame")
+    navigation.pack(fill="x", pady=(0, 10))
+    tabs = ttk.Notebook(pad, style="Settings.TNotebook")
     tabs.pack(fill="both", expand=True)
-    display = ttk.Frame(tabs, padding=14)
-    weather = ttk.Frame(tabs, padding=14)
+    display = ttk.Frame(tabs, style="Settings.TFrame")
+    weather = ttk.Frame(tabs, padding=(4, 12), style="Settings.TFrame")
     tabs.add(display, text=L("显示与启动"))
     tabs.add(weather, text=L("天气"))
     win._translated_tabs = tabs
+    navigation_buttons = []
+    for page, title in ((display, "显示与启动"), (weather, "天气")):
+        button = ttk.Button(navigation, text=L(title), style="SettingsNav.TButton",
+                            command=lambda target=page: tabs.select(target))
+        button.pack(side="left", padx=(0, 8))
+        navigation_buttons.append((page, button))
+    def update_navigation(_event=None):
+        for page, button in navigation_buttons:
+            button.configure(style=("SettingsNavActive.TButton" if tabs.select() == str(page)
+                                     else "SettingsNav.TButton"))
+    tabs.bind("<<NotebookTabChanged>>", update_navigation)
+    update_navigation()
+    scroll = ttk.Scrollbar(display, orient="vertical", style="Settings.Vertical.TScrollbar")
+    scroll.pack(side="right", fill="y")
+    canvas = tk.Canvas(display, bg=PAGE, highlightthickness=0, bd=0,
+                       yscrollcommand=scroll.set)
+    canvas.pack(side="left", fill="both", expand=True)
+    scroll.configure(command=canvas.yview)
+    content = ttk.Frame(canvas, style="Settings.TFrame")
+    content_id = canvas.create_window(0, 0, window=content, anchor="nw")
+    content.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+    canvas.bind("<Configure>", lambda event: canvas.itemconfigure(content_id, width=event.width))
+    def wheel(event):
+        if tabs.select() == str(display) and content.winfo_height() > canvas.winfo_height():
+            canvas.yview_scroll(-int(event.delta / 120), "units")
+    win.bind("<MouseWheel>", wheel, add="+")
+
+    def section(title):
+        _label(content, app, title, foreground=MUTED,
+               font=("Microsoft YaHei UI", 9, "bold")).pack(anchor="w", pady=(8, 8))
+        border = tk.Frame(content, bg="#e9e2ef", padx=1, pady=1)
+        border.pack(fill="x", padx=(0, 8), pady=(0, 10))
+        return ttk.Frame(border, style="SettingsCard.TFrame")
+
+    desktop_card = section("桌面显示")
+    desktop_card.pack(fill="both", expand=True)
+    reminders_card = None
     check_vars = {}
-    for key, label in (
-        ("show_status_bubble", "显示数据气泡"),
-        ("show_fps", "显示前台应用 FPS"),
-        ("show_temperature", "托盘显示 CPU / GPU 温度"),
-        ("start_with_windows", "登录 Windows 后自动启动"),
-        ("cpu_reactions", "CPU 连续高负载时提醒（本机采样，不上传）"),
-        ("night_reactions", "深夜 00:00–04:59 偶尔提醒休息"),
-    ):
+    for index, (key, label, hint) in enumerate((
+        ("show_status_bubble", "显示数据气泡", "待机或睡觉时，轻轻显示时间、天气和电脑状态。"),
+        ("show_fps", "显示前台应用 FPS", "显示当前游戏或前台应用的帧率。"),
+        ("show_temperature", "托盘显示 CPU / GPU 温度", "温度只显示在托盘；无有效读数时显示 --°C。"),
+        ("start_with_windows", "登录 Windows 后自动启动", "登录后，让猫咪自动来到桌面。"),
+        ("cpu_reactions", "电脑忙碌提醒", "CPU 持续高负载时提醒；只在本机采样。"),
+        ("night_reactions", "深夜休息提醒", "00:00–04:59 偶尔轻声提醒你休息。"),
+    )):
+        if index == 4:
+            reminders_card = section("轻声提醒")
+            reminders_card.pack(fill="both", expand=True)
+        card = reminders_card if index >= 4 else desktop_card
+        if index not in {0, 4}:
+            tk.Frame(card, bg="#f0ebf5", height=1).pack(fill="x", padx=16)
+        row = ttk.Frame(card, padding=(16, 9), style="SettingsCard.TFrame")
+        row.pack(fill="x")
+        copy = ttk.Frame(row, style="SettingsCard.TFrame")
+        copy.pack(side="left", fill="both", expand=True)
+        title_label = _label(copy, app, label, style="SettingsCard.TLabel")
+        title_label.configure(wraplength=440)
+        title_label.pack(anchor="w")
+        hint_label = _label(copy, app, hint, style="SettingsCard.TLabel", foreground=MUTED,
+                            font=("Microsoft YaHei UI", 9))
+        hint_label.configure(wraplength=440)
+        hint_label.pack(anchor="w", pady=(3, 0))
+        row.bind("<Configure>", lambda event, title=title_label, note=hint_label: (
+            title.configure(wraplength=max(200, event.width - 110)),
+            note.configure(wraplength=max(200, event.width - 110)),
+        ))
         default = key not in {"cpu_reactions", "night_reactions"}
         variable = tk.BooleanVar(value=bool(app.settings.get(key, default)))
         if key == "start_with_windows" and app.startup_status is not None and app.startup_status.disabled_by_windows:
             variable.set(False)
         check_vars[key] = variable
-        ttk.Checkbutton(display, text=L(label), variable=variable).pack(anchor="w", pady=9)
-    _label(display, app, "自启动使用稳定副本；可在此处或 Windows 启动应用中关闭。",
-           foreground="#71658a").pack(fill="x", pady=(10, 8))
-    _label(display, app, "FPS 跟随前台应用；未持续渲染或无法采集时显示暂无数据。",
-           foreground="#71658a").pack(fill="x", pady=6)
-    _label(display, app, "已内置 LibreHardwareMonitor；CPU 读取可能需要 PawnIO 和权限。不支持时显示 --°C，诊断步骤见 README。",
-           foreground="#71658a").pack(fill="x", pady=6)
+        switch = ttk.Checkbutton(row, text=L(label), variable=variable,
+                                 style="SettingsSwitch.TCheckbutton", cursor="hand2")
+        switch.pack(side="right", padx=(10, 0))
+        for widget in (title_label, hint_label):
+            widget.configure(cursor="hand2")
+            widget.bind("<Button-1>", lambda _e, control=switch: control.invoke())
     if not getattr(sys, "frozen", False):
-        _label(display, app, "源码运行时不设置开机启动", foreground="#71658a").pack(fill="x", pady=6)
+        _label(content, app, "源码运行时不设置开机启动", foreground=MUTED).pack(fill="x", pady=6)
     elif app.startup_status is not None and app.startup_status.disabled_by_windows:
-        _label(display, app, "已在 Windows 启动应用中关闭", foreground="#9a641a").pack(fill="x", pady=6)
+        _label(content, app, "已在 Windows 启动应用中关闭", foreground="#9a641a").pack(fill="x", pady=6)
     if app.startup_error:
-        ttk.Label(display, text=app.startup_error, wraplength=530,
+        ttk.Label(content, text=app.startup_error, wraplength=530, style="Settings.TLabel",
                   foreground="#9a641a").pack(fill="x", pady=6)
 
     _label(weather, app, "天气城市").pack(anchor="w", pady=(0, 5))
     query_text = tk.StringVar(value=str(app.settings.get("weather_city", "")))
-    query = ttk.Entry(weather, textvariable=query_text)
+    query = ttk.Entry(weather, textvariable=query_text, style="Settings.TEntry")
     query.pack(fill="x", ipady=5)
     _label(weather, app, "搜索后选择城市、省州和国家；留空保存可关闭天气。",
            foreground="#71658a").pack(fill="x", pady=(6, 12))
@@ -173,7 +323,8 @@ def open_preferences(app):
             locations.append(selected[0])
         except ValueError:
             pass
-    location_box = ttk.Combobox(weather, state="readonly", values=[item.label for item in locations])
+    location_box = ttk.Combobox(weather, state="readonly", values=[item.label for item in locations],
+                              style="Settings.TCombobox")
     location_box.pack(fill="x", ipady=5, pady=(0, 10))
     if locations:
         location_box.current(0)
@@ -194,11 +345,11 @@ def open_preferences(app):
         preview[0] = None
         location_box.set("")
     query_text.trace_add("write", invalidate_location)
-    weather_buttons = ttk.Frame(weather)
+    weather_buttons = ttk.Frame(weather, style="Settings.TFrame")
     weather_buttons.pack(fill="x")
-    search_button = ttk.Button(weather_buttons, text=L("搜索城市"))
+    search_button = ttk.Button(weather_buttons, text=L("搜索城市"), style="SettingsPrimary.TButton")
     search_button.pack(side="left")
-    refresh_button = ttk.Button(weather_buttons, text=L("立即刷新"))
+    refresh_button = ttk.Button(weather_buttons, text=L("立即刷新"), style="Settings.TButton")
     refresh_button.pack(side="left", padx=10)
     def finish_search(found, error, searched):
         if not win.winfo_exists():
@@ -252,7 +403,7 @@ def open_preferences(app):
             app._schedule_ui(lambda: finish(reading, error))
         threading.Thread(target=run, name="pawpal-weather-test", daemon=True).start()
     refresh_button.configure(command=refresh)
-    buttons = ttk.Frame(pad)
+    buttons = ttk.Frame(pad, style="Settings.TFrame")
     buttons.pack(fill="x", pady=(14, 0))
     def save():
         city = query.get().strip()
@@ -297,8 +448,16 @@ def open_preferences(app):
                 return
         app._update_chat_context_status(force=True)
         win.close_window()
-    ttk.Button(buttons, text=L("保存设置"), command=save).pack(side="right")
-    ttk.Button(buttons, text=L("取消"), command=win.close_window).pack(side="right", padx=8)
+    def explain_readings():
+        messagebox.showinfo(L("读数与启动说明"), "\n\n".join(L(text) for text in (
+            "FPS 跟随前台应用；未持续渲染或无法采集时显示暂无数据。",
+            "已内置 LibreHardwareMonitor；CPU 读取可能需要 PawnIO 和权限。不支持时显示 --°C，诊断步骤见 README。",
+            "自启动使用稳定副本；可在此处或 Windows 启动应用中关闭。",
+        )), parent=win)
+    ttk.Button(buttons, text=L("读数与启动说明"), command=explain_readings,
+               style="Settings.TButton").pack(side="left")
+    ttk.Button(buttons, text=L("保存设置"), command=save, style="SettingsPrimary.TButton").pack(side="right")
+    ttk.Button(buttons, text=L("取消"), command=win.close_window, style="Settings.TButton").pack(side="right", padx=8)
 
 
 def open_ai_settings(app):
@@ -307,17 +466,18 @@ def open_ai_settings(app):
     if win is None:
         return
     L = app._t
-    pad = ttk.Frame(win, padding=20)
+    pad = ttk.Frame(win, padding=20, style="Settings.TFrame")
     pad.pack(fill="both", expand=True)
     _label(pad, app, "连接 AI 接口", font=("Microsoft YaHei UI", 14, "bold")).pack(anchor="w")
     _label(pad, app, "支持 OpenAI、DeepSeek 或自定义兼容服务。").pack(fill="x", pady=(5, 14))
     provider_ids = ["OpenAI", "DeepSeek", "Custom"]
-    provider_box = ttk.Combobox(pad, state="readonly", values=["OpenAI", "DeepSeek", L("自定义 / Ollama")])
+    provider_box = ttk.Combobox(pad, state="readonly", values=["OpenAI", "DeepSeek", L("自定义 / Ollama")],
+                              style="Settings.TCombobox")
     provider_box._localizable_values = ("OpenAI", "DeepSeek", "自定义 / Ollama")
     provider_box.pack(fill="x", ipady=5)
     def field(label, initial="", show=""):
         _label(pad, app, label).pack(anchor="w", pady=(13, 4))
-        entry = ttk.Entry(pad, show=show)
+        entry = ttk.Entry(pad, show=show, style="Settings.TEntry")
         entry.insert(0, initial)
         entry.pack(fill="x", ipady=5)
         return entry
@@ -365,9 +525,9 @@ def open_ai_settings(app):
             model.insert(0, updated_model)
             model_name = updated_model
         return url, model_name, api_key
-    buttons = ttk.Frame(pad)
+    buttons = ttk.Frame(pad, style="Settings.TFrame")
     buttons.pack(fill="x", side="bottom", pady=(12, 0))
-    test_button = ttk.Button(buttons, text=L("测试连接"))
+    test_button = ttk.Button(buttons, text=L("测试连接"), style="Settings.TButton")
     test_button.pack(side="left")
     def test():
         try:
@@ -415,6 +575,6 @@ def open_ai_settings(app):
         if app.chat_status is not None:
             app.chat_status.configure(text=app._mode_label())
         win.close_window()
-    ttk.Button(buttons, text=L("保存设置"), command=save).pack(side="right")
-    ttk.Button(buttons, text=L("取消"), command=win.close_window).pack(side="right", padx=8)
+    ttk.Button(buttons, text=L("保存设置"), command=save, style="SettingsPrimary.TButton").pack(side="right")
+    ttk.Button(buttons, text=L("取消"), command=win.close_window, style="Settings.TButton").pack(side="right", padx=8)
 

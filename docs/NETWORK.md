@@ -17,7 +17,7 @@ v5 保留原界面与服务商选择。DeepSeek 使用官方 Chat Completions �
 先退出旧版本。普通权限 PowerShell 在 EXE 所在目录执行（单文件版替换文件名）：
 
 ```powershell
-$p = Start-Process '.\PawpalCat-v5.exe' -ArgumentList '--system-diagnostics=system-report.json' -Wait -PassThru
+$p = Start-Process '.\PawpalCat-v6.exe' -ArgumentList '--system-diagnostics=system-report.json' -Wait -PassThru
 Get-Content '.\system-report.json' -Raw
 ```
 

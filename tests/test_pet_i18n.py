@@ -20,7 +20,7 @@ class LanguageTests(unittest.TestCase):
             self.assertTrue(all(variants), key)
 
     def test_switches_static_ui_text_in_both_directions(self):
-        for key in ("chat", "actions", "sleep", "language", "startup", "ai_title", "cancel", "weather.clear", "fps.permission_denied"):
+        for key in ("chat", "actions", "click", "eat", "sleep", "language", "startup", "ai_title", "cancel", "weather.clear", "fps.permission_denied"):
             for source in LANGUAGES:
                 for target in LANGUAGES:
                     self.assertEqual(localize(tr(key, source), target), tr(key, target), (key, source, target))

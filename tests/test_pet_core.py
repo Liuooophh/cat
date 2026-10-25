@@ -31,7 +31,7 @@ APP_LOADER.exec_module(APP_MODULE)
 
 class DialogueTests(unittest.TestCase):
     def test_dialogue_keeps_ambient_actions_silent_and_cat_responses_brief(self) -> None:
-        for category in ("idle", "walk", "groom", "sleep", "yawn"):
+        for category in ("idle", "walk", "click", "eat", "groom", "sleep", "yawn"):
             self.assertIn(category, DIALOGUE)
             self.assertEqual(DIALOGUE[category], [])
         for category in ("clicked", "wake", "wave", "interaction"):
@@ -53,15 +53,13 @@ class DialogueTests(unittest.TestCase):
 
 
 class BehaviorTests(unittest.TestCase):
-    def test_fifth_fast_click_returns_to_idle_and_stays_quiet_during_cooldown(self) -> None:
+    def test_touch_starts_one_click_gesture_and_does_not_restart_it(self) -> None:
         manager = PetBehaviorManager()
-        with patch("pet_behavior.random.random", return_value=0.0):
-            outcomes = [manager.click(now=10 + index * 0.4) for index in range(5)]
-        self.assertIsNotNone(outcomes[-1])
-        self.assertEqual((outcomes[-1].state, outcomes[-1].dialogue), ("idle", ""))
-        self.assertFalse(any(action is not None and action.state == "angry" for action in outcomes))
-        self.assertIsNone(manager.click(now=12.1))
-        self.assertEqual(manager.last_activity, 12.1)
+        outcomes = [manager.click(now=10 + index * 0.4) for index in range(5)]
+        self.assertEqual((outcomes[0].state, outcomes[0].dialogue), ("click", "clicked"))
+        self.assertTrue(all(action is None for action in outcomes[1:]))
+        self.assertEqual(manager.state, "click")
+        self.assertEqual(manager.last_activity, 11.6)
 
     def test_ambient_actions_wait_for_idle_and_jittered_check(self) -> None:
         manager = PetBehaviorManager()
@@ -79,17 +77,14 @@ class BehaviorTests(unittest.TestCase):
         manager.state_until = now + 500
         self.assertIsNone(manager.autonomous_action(now=now + 100))
 
-    def test_autonomous_walk_and_long_idle_sleep_are_reachable(self) -> None:
+    def test_autonomous_eating_and_long_idle_sleep_are_reachable(self) -> None:
         manager = PetBehaviorManager()
         manager.next_autonomous_check = 0
         now = manager.last_activity + 10
         with patch("pet_behavior.random.random", return_value=0.10):
-            walking = manager.autonomous_action(now=now)
-        self.assertIsNotNone(walking)
-        self.assertEqual(walking.state, "walk")
-        self.assertEqual(walking.dialogue, "")
-        self.assertGreaterEqual(walking.duration, 4)
-        self.assertLessEqual(walking.duration, 8)
+            eating = manager.autonomous_action(now=now)
+        self.assertIsNotNone(eating)
+        self.assertEqual((eating.state, eating.dialogue, eating.duration), ("eat", "", 10.0))
 
         manager = PetBehaviorManager()
         manager.last_activity = 0
@@ -106,7 +101,7 @@ class BehaviorTests(unittest.TestCase):
 
     def test_context_reactions_only_start_while_idle(self) -> None:
         manager = PetBehaviorManager()
-        manager.state = "walk"
+        manager.state = "eat"
         manager.state_until = 200
         self.assertIsNone(manager.context_action("confused", "cpu", now=100))
         manager.update(now=201)

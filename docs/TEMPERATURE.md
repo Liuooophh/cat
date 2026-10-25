@@ -84,14 +84,14 @@ py .\tools\build_windows.py
 
 模拟测试覆盖 CPU 来源优先级、Intel/AMD 常见命名差异、多 GPU、子硬件归属、空值、伪零、缺失传感器、后台隔离与清理。它们验证逻辑，不能替代真实硬件测试。
 
-默认产物 dist/PawpalCat-v5/ 包含 EXE 与 _internal，必须整体保留。构建会纳入 Python.Runtime.dll、CLR 加载器、CFFI、固定 LHM 实现及运行依赖，并校验资源清单。--output-dir 可以更改产物目录。
+默认产物 dist/PawpalCat-v6/ 包含 EXE 与 _internal，必须整体保留。构建会纳入 Python.Runtime.dll、CLR 加载器、CFFI、固定 LHM 实现及运行依赖，并校验资源清单。--output-dir 可以更改产物目录。
 
 如果要恢复构建依赖，执行 py .\tools\prepare_lhm.py；它只下载锁文件记录的官方 NuGet 包和许可，校验 SHA-256，不安装系统组件。--verify-only 不访问网络。
 
 发布目录的实际诊断：
 
 ```powershell
-$probe = Start-Process -FilePath '.\dist\PawpalCat-v5\PawpalCat-v5.exe' -ArgumentList '--temperature-diagnostics=temperature-directory.json','--samples','3' -Wait -PassThru
+$probe = Start-Process -FilePath '.\dist\PawpalCat-v6\PawpalCat-v6.exe' -ArgumentList '--temperature-diagnostics=temperature-directory.json','--samples','3' -Wait -PassThru
 $probe.ExitCode
 Get-Content -LiteralPath '.\temperature-directory.json' -Raw
 ```
@@ -101,8 +101,8 @@ Get-Content -LiteralPath '.\temperature-directory.json' -Raw
 单文件版为可选构建：
 
 ```powershell
-py .\tools\build_windows.py --onefile --name PawpalCat-v5-Onefile
-$probe = Start-Process -FilePath '.\dist\PawpalCat-v5-Onefile.exe' -ArgumentList '--temperature-diagnostics=temperature-onefile.json','--samples','3' -Wait -PassThru
+py .\tools\build_windows.py --onefile --name PawpalCat-v6-Onefile
+$probe = Start-Process -FilePath '.\dist\PawpalCat-v6-Onefile.exe' -ArgumentList '--temperature-diagnostics=temperature-onefile.json','--samples','3' -Wait -PassThru
 Get-Content -LiteralPath '.\temperature-onefile.json' -Raw
 ```
 

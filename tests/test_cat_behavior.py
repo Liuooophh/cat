@@ -8,11 +8,10 @@ from pet_dialogue import DialogueManager
 
 
 class CatBehaviorTests(unittest.TestCase):
-    def test_sleep_click_wakes_even_during_click_cooldown(self) -> None:
+    def test_sleep_click_wakes_immediately(self) -> None:
         manager = PetBehaviorManager()
         manager.state = "sleep"
         manager.state_until = 1000
-        manager.click_cooldown_until = 500
         action = manager.click(now=100)
 
         self.assertIsNotNone(action)
@@ -28,8 +27,8 @@ class CatBehaviorTests(unittest.TestCase):
         manager.next_autonomous_check = 0
         manager.sleep_after = 180
         with patch("pet_behavior.random.random", return_value=0.1):
-            walking = manager.autonomous_action(now=50)
-        self.assertEqual(walking.state, "walk")
+            eating = manager.autonomous_action(now=50)
+        self.assertEqual(eating.state, "eat")
         manager.update(now=60)
         self.assertEqual(manager.last_activity, 0)
         manager.context_action("confused", "cpu", now=70)
@@ -54,20 +53,26 @@ class CatBehaviorTests(unittest.TestCase):
         action = manager.manual_action("wake", now=100002)
         self.assertEqual((action.state, action.dialogue), ("idle", "wake"))
 
-    def test_manual_walk_uses_one_loop_deadline_and_groom_uses_full_clip(self) -> None:
-        manager = PetBehaviorManager({"walk": (5, 8), "groom": 9.375},
-                                     manual_walk_duration=5.2)
-        action = manager.manual_action("walk", now=100)
-        self.assertEqual(action.duration, 5.2)
-        self.assertFalse(manager.update(now=105))
-        self.assertTrue(manager.update(now=105.2))
-        action = manager.manual_action("groom", now=110)
-        self.assertEqual(action.duration, 9.375)
-        self.assertTrue(manager.update(now=119.375))
+    def test_manual_one_shot_actions_use_full_clip_deadlines(self) -> None:
+        manager = PetBehaviorManager({"click": 4.0, "eat": 9.75, "groom": 9.375})
+        action = manager.manual_action("click", now=100)
+        self.assertEqual((action.state, action.dialogue, action.duration),
+                         ("click", "clicked", 4.0))
+        self.assertFalse(manager.update(now=103.99))
+        self.assertTrue(manager.update(now=104))
+
+        action = manager.manual_action("eat", now=110)
+        self.assertEqual((action.state, action.dialogue, action.duration), ("eat", "", 9.75))
+        self.assertTrue(manager.update(now=119.75))
+
+        action = manager.manual_action("groom", now=130)
+        self.assertEqual((action.state, action.dialogue, action.duration), ("groom", "", 9.375))
+        self.assertTrue(manager.update(now=139.375))
 
     def test_manual_action_rejects_unknown_animation(self) -> None:
-        with self.assertRaises(ValueError):
-            PetBehaviorManager().manual_action("jump", now=100)
+        for state in ("jump", "walk"):
+            with self.subTest(state=state), self.assertRaises(ValueError):
+                PetBehaviorManager().manual_action(state, now=100)
 
     def test_groom_is_one_complete_silent_action_with_configurable_duration(self) -> None:
         manager = PetBehaviorManager(state_duration={"groom": 9.25})
@@ -82,18 +87,16 @@ class CatBehaviorTests(unittest.TestCase):
         self.assertEqual(manager.state, "idle")
         self.assertGreaterEqual(manager.next_autonomous_check, now + 9.25 + 30)
 
-    def test_click_burst_enters_silent_cooldown(self) -> None:
+    def test_idle_click_plays_once_without_restarting_mid_gesture(self) -> None:
         manager = PetBehaviorManager()
-        with patch("pet_behavior.random.random", return_value=0.0):
-            actions = [manager.click(now=100 + index * 0.3) for index in range(5)]
-        self.assertEqual(actions[0].dialogue, "clicked")
-        self.assertIsNone(actions[1])
-        self.assertIsNone(actions[2])
-        self.assertIsNone(actions[3])
-        self.assertEqual((actions[4].state, actions[4].dialogue), ("idle", ""))
-        self.assertIsNone(manager.click(now=102))
-        self.assertEqual(manager.last_activity, 102)
-        self.assertGreater(manager.click_cooldown_until, 102)
+        first = manager.click(now=100)
+        self.assertEqual((first.state, first.dialogue, first.duration), ("click", "clicked", 4.0))
+        self.assertIsNone(manager.click(now=101))
+        self.assertEqual(manager.state, "click")
+        self.assertEqual(manager.last_activity, 101)
+        self.assertTrue(manager.update(now=104))
+        second = manager.click(now=105)
+        self.assertEqual((second.state, second.dialogue), ("click", "clicked"))
 
     def test_idle_and_most_ambient_checks_are_silent(self) -> None:
         manager = PetBehaviorManager()
@@ -101,9 +104,9 @@ class CatBehaviorTests(unittest.TestCase):
         now = manager.last_activity + 1
         with patch("pet_behavior.random.random", return_value=0.5):
             self.assertIsNone(manager.autonomous_action(now=now))
-            self.assertIsNone(manager.click(now=now + 1))
         self.assertEqual(manager.state, "idle")
         self.assertIsNone(DialogueManager().choose("idle", now=100))
+        self.assertIsNone(DialogueManager().choose("eat", now=100))
         self.assertIsNone(DialogueManager().choose("groom", now=100))
 
     def test_dialogue_remains_short_and_honors_click_cooldown(self) -> None:

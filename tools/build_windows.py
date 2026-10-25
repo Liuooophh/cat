@@ -1,7 +1,9 @@
 """Build a local portable Windows app; no GitHub or upload operations."""
 from pathlib import Path
 import argparse
+import hashlib
 import importlib.metadata
+import json
 import struct
 import ssl
 import subprocess
@@ -10,10 +12,53 @@ import sys
 from prepare_lhm import verify_vendor
 
 
+VIDEOIO_DLL_SHA256 = "7aabff029d1fa47cf56ede4dbbe05dc62da3208f07cd16471d4c966a33f9aa31"
+
+
+def verify_videoio_vendor(vendor_dir: Path) -> None:
+    required = (
+        vendor_dir / "opencv_videoio_ffmpeg500_64.dll",
+        vendor_dir / "LICENSE.txt",
+        vendor_dir / "LICENSE-3RD-PARTY.txt",
+        vendor_dir / "README.md",
+    )
+    missing = [path.name for path in required if not path.is_file()]
+    if missing:
+        raise SystemExit(f"Missing OpenCV Video I/O vendor files: {', '.join(missing)}")
+    actual = hashlib.sha256(required[0].read_bytes()).hexdigest()
+    if actual != VIDEOIO_DLL_SHA256:
+        raise SystemExit(
+            "Unexpected OpenCV Video I/O DLL. "
+            f"Expected SHA-256 {VIDEOIO_DLL_SHA256}; found {actual}."
+        )
+
+
+def verify_cat_video_assets(asset_dir: Path) -> None:
+    manifest_path = asset_dir / "clips.json"
+    if not manifest_path.is_file():
+        raise SystemExit("Missing cat assets: assets/cat/clips.json")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"Invalid cat animation manifest: {exc}") from exc
+    clips = manifest.get("clips")
+    expected = {"idle", "sleep", "click", "eat", "groom"}
+    if manifest.get("asset_format") != "mp4-color-alpha" or not isinstance(clips, dict):
+        raise SystemExit("Cat assets must use the packed color-and-alpha MP4 format.")
+    if set(clips) != expected:
+        raise SystemExit("Cat assets must contain exactly idle, sleep, click, eat and groom.")
+    for state in sorted(expected):
+        filename = clips[state].get("file") if isinstance(clips[state], dict) else None
+        if (not isinstance(filename, str) or Path(filename).name != filename
+                or Path(filename).suffix.lower() != ".mp4"
+                or not (asset_dir / filename).is_file()):
+            raise SystemExit(f"Missing or invalid MP4 for cat action: {state}")
+
+
 def main() -> None:
     root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--name", default="PawpalCat-v5")
+    parser.add_argument("--name", default="PawpalCat-v6.3")
     parser.add_argument("--output-dir", type=Path, default=root / "dist")
     layout = parser.add_mutually_exclusive_group()
     layout.add_argument("--onedir", action="store_true", help="Build a portable directory (default)")
@@ -33,8 +78,8 @@ def main() -> None:
         if actual != expected:
             raise SystemExit(f"Expected {package} {expected}; found {actual}.")
     verify_vendor(root / "assets/vendor/librehardwaremonitor")
-    if not (root / "assets/cat/clips.json").is_file():
-        raise SystemExit("Missing cat assets: assets/cat/clips.json")
+    verify_videoio_vendor(root / "assets/vendor/opencv-videoio")
+    verify_cat_video_assets(root / "assets/cat")
     runtime_resources = []
     # This managed build runtime patches SSLContext to load a local trust-policy
     # resource. Preserve that policy in frozen builds; stock Python needs none.

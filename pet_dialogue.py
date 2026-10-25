@@ -11,6 +11,8 @@ import time
 DIALOGUE: dict[str, list[str]] = {
     "idle": [],
     "walk": [],
+    "click": [],
+    "eat": [],
     "groom": [],
     "sleep": [],
     "happy": ["呼噜……", "喵。"],
@@ -33,7 +35,8 @@ DIALOGUE: dict[str, list[str]] = {
 
 
 COOLDOWNS = {
-    "idle": 120.0, "walk": 120.0, "groom": 120.0, "sleep": 180.0,
+    "idle": 120.0, "walk": 120.0, "click": 120.0, "eat": 120.0,
+    "groom": 120.0, "sleep": 180.0,
     "happy": 45.0, "angry": 30.0, "laugh": 45.0, "yawn": 90.0,
     "clicked": 12.0, "wake": 8.0, "surprised": 45.0,
     "confused": 45.0, "wave": 30.0, "interaction": 90.0,

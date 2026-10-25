@@ -15,15 +15,17 @@ class PetAction:
     duration: float
 
 
-# Keep the original state names available for callers and older settings.
+# Keep legacy state names available for callers and older settings.  Only the
+# five states backed by the current cat clips are started by this manager.
 STATE_PRIORITY = {
-    "idle": 0, "walk": 1, "groom": 2, "wave": 2, "interaction": 2,
+    "idle": 0, "walk": 1, "eat": 2, "groom": 2, "wave": 2, "interaction": 2,
     "surprised": 3, "confused": 3, "happy": 4, "laugh": 4,
-    "yawn": 5, "clicked": 6, "angry": 7, "sleep": 8,
+    "yawn": 5, "click": 6, "clicked": 6, "angry": 7, "sleep": 8,
 }
 
 STATE_DURATION = {
-    "walk": (4.0, 8.0), "groom": (9.1667, 9.1667),
+    "walk": (4.0, 8.0),  # Legacy configuration key; no longer scheduled.
+    "click": (4.0, 4.0), "eat": (10.0, 10.0), "groom": (10.0, 10.0),
     "sleep": (60.0, 180.0), "idle": (1.0, 1.0),
     "happy": (2.0, 3.0), "angry": (2.0, 3.0), "laugh": (2.0, 3.0),
     "yawn": (2.0, 3.0), "clicked": (1.5, 2.5),
@@ -45,14 +47,13 @@ class PetBehaviorManager:
         self.state_duration = dict(STATE_DURATION)
         if state_duration is not None:
             self.state_duration.update(state_duration)
+        # Retain the constructor keyword while older settings/builds migrate;
+        # walk is no longer selected or accepted as a current cat action.
         self.manual_walk_duration = manual_walk_duration
         self.state = "idle"
         self.state_started = now
         self.state_until: float | None = 0.0
         self.last_activity = now
-        self.last_click = 0.0
-        self.click_count = 0
-        self.click_cooldown_until = 0.0
         self.next_autonomous_check = now + random.uniform(30.0, 70.0)
         self.sleep_after = random.uniform(180.0, 300.0)
 
@@ -85,57 +86,33 @@ class PetBehaviorManager:
     def manual_action(self, state: str, *, now: float | None = None) -> PetAction:
         """Request one complete gesture, or sleep until an explicit wake.
 
-        The UI queues requests made during an exit. ``manual_walk_duration``
-        should fall inside the first stable loop: MotionPlayer completes that
-        loop and the contiguous exit after this intent expires.
+        The UI queues requests made during an exit.  Click, eating and grooming
+        play once; sleep has no deadline and therefore needs an explicit wake.
         """
-        if state not in {"idle", "walk", "groom", "sleep", "wake"}:
+        if state not in {"idle", "click", "eat", "groom", "sleep", "wake"}:
             raise ValueError(f"unsupported manual action: {state}")
         now = time.monotonic() if now is None else now
         if state == "wake":
             state = "idle"
         dialogue = "wake" if state == "idle" and self.state == "sleep" else ""
-        duration = None
-        if state == "walk":
-            duration = self.manual_walk_duration
-            if duration is None:
-                configured = self.state_duration.get("walk", STATE_DURATION["walk"])
-                duration = float(configured if isinstance(configured, (int, float))
-                                 else configured[0])
-        return self._start(state, dialogue, now, user_action=True, duration=duration)
+        if state == "click":
+            dialogue = "clicked"
+        return self._start(state, dialogue, now, user_action=True)
 
     def click(self, *, now: float | None = None) -> PetAction | None:
         now = time.monotonic() if now is None else now
         self.mark_activity(now=now)
 
-        # Waking is an explicit interaction, even during a previous click burst.
+        # A sleeping cat wakes on touch.  Other gestures finish undisturbed so
+        # repeated presses do not make the animation jump or restart.
         if self.state == "sleep":
-            self.click_count = 0
-            self.last_click = now
             return self._start("idle", "wake", now, user_action=True)
-
-        if self.click_count and now - self.last_click < 1.5:
-            self.click_count += 1
-        else:
-            self.click_count = 1
-        self.last_click = now
-
-        if now < self.click_cooldown_until:
+        if self.state != "idle":
             return None
-        if self.click_count >= 5:
-            self.click_cooldown_until = now + 6.0
-            self.click_count = 0
-            return self._start("idle", "", now, user_action=True)
-
-        # Touch can interrupt walking or grooming, but usually stays silent.
-        dialogue = "clicked" if self.click_count == 1 and random.random() < 0.25 else ""
-        if self.state == "idle" and not dialogue:
-            return None
-        return self._start("idle", dialogue, now, user_action=True)
+        return self._start("click", "clicked", now, user_action=True)
 
     def user_wave(self, *, now: float | None = None) -> PetAction:
         now = time.monotonic() if now is None else now
-        self.click_count = 0
         return self._start("idle", "wave", now, user_action=True) or PetAction("idle", "wave", 2.0)
 
     def context_action(self, state: str, dialogue: str, *, now: float | None = None,
@@ -155,8 +132,6 @@ class PetBehaviorManager:
 
     def update(self, *, now: float | None = None) -> bool:
         now = time.monotonic() if now is None else now
-        if self.click_count and now - self.last_click >= 4.0:
-            self.click_count = 0
         if (self.state != "idle" and self.state_until is not None
                 and now >= self.state_until):
             self.state = "idle"
@@ -176,11 +151,11 @@ class PetBehaviorManager:
         if inactive_for >= self.sleep_after and random.random() < 0.65:
             return self._start("sleep", "", now)
 
-        # Most checks do nothing. A full groom and a short walk are occasional
-        # ambient actions, neither of which should delay the next natural nap.
+        # Most checks do nothing.  Grooming is a little more common than eating;
+        # both play once and neither delays the next natural nap.
         roll = random.random()
         if roll < 0.08:
             return self._start("groom", "", now)
-        if roll < 0.16:
-            return self._start("walk", "", now)
+        if roll < 0.12:
+            return self._start("eat", "", now)
         return None

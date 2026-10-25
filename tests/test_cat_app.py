@@ -439,10 +439,11 @@ class CatAppTests(unittest.TestCase):
         self.pet._choose_action = Mock()
         menu = self.pet._tray_menu()
         actions = next(item for item in menu.items if item.submenu is not None)
-        for item, expected in zip(actions.submenu.items, ("walk", "groom", "sleep", "idle")):
+        expected_states = ("click", "eat", "groom", "sleep", "idle")
+        for item, expected in zip(actions.submenu.items, expected_states):
             item(None)
             self.pet._choose_action.assert_called_with(expected)
-        self.assertEqual(self.pet._choose_action.call_count, 4)
+        self.assertEqual(self.pet._choose_action.call_count, len(expected_states))
 
     def test_autonomy_waits_for_visual_outro_to_finish(self) -> None:
         self.pet.root = Mock()

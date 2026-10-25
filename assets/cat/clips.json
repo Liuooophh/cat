@@ -1,15 +1,24 @@
 {
-  "format_version": 2,
+  "format_version": 3,
+  "asset_format": "mp4-color-alpha",
+  "video_layout": "color-alpha-side-by-side",
   "cell_size": [
     320,
     300
   ],
   "ground_y": 282,
-  "fps": 24,
-  "source_package": "cat-assets.zip",
+  "fps": 24.0,
+  "source_size": [
+    1088,
+    816
+  ],
+  "source_scale": 0.32,
+  "audio": false,
+  "matte_revision": "neutral-contact-floor-v3-smooth-paw",
   "clips": {
     "idle": {
-      "fps": 24,
+      "file": "idle.mp4",
+      "fps": 24.0,
       "loop": true,
       "source_facing": "front",
       "frame_count": 240,
@@ -17,67 +26,67 @@
         0,
         240
       ],
-      "loop_blend_frames": 3
+      "idle_entry_frame": 0,
+      "loop_blend_frames": 4
     },
-    "walk": {
-      "fps": 24,
-      "loop": true,
-      "source_facing": "left",
-      "frame_count": 240,
+    "click": {
+      "file": "click.mp4",
+      "fps": 24.0,
+      "loop": false,
+      "source_facing": "front",
+      "frame_count": 96,
       "play_range": [
         0,
-        240
+        96
       ],
-      "stages": {
-        "enter": [
-          0,
-          103
-        ],
-        "loop": [
-          103,
-          147
-        ],
-        "exit": [
-          147,
-          240
-        ]
-      },
-      "movement_range": [
-        72,
-        160
-      ],
-      "loop_blend_frames": 3
+      "idle_entry_frame": 0
     },
-    "groom": {
-      "fps": 24,
+    "eat": {
+      "file": "eat.mp4",
+      "fps": 24.0,
       "loop": false,
       "source_facing": "front",
       "frame_count": 240,
       "play_range": [
         0,
-        225
-      ]
+        240
+      ],
+      "idle_entry_frame": 0
     },
-    "sleep": {
-      "fps": 24,
-      "loop": true,
-      "source_facing": "left",
+    "groom": {
+      "file": "groom.mp4",
+      "fps": 24.0,
+      "loop": false,
+      "source_facing": "front",
       "frame_count": 240,
       "play_range": [
         0,
         240
       ],
+      "idle_entry_frame": 0
+    },
+    "sleep": {
+      "file": "sleep.mp4",
+      "fps": 24.0,
+      "loop": true,
+      "source_facing": "front",
+      "frame_count": 240,
+      "play_range": [
+        0,
+        240
+      ],
+      "idle_entry_frame": 0,
       "stages": {
         "enter": [
           0,
-          132
+          144
         ],
         "loop": [
-          132,
-          178
+          144,
+          168
         ],
         "exit": [
-          178,
+          168,
           240
         ]
       },
