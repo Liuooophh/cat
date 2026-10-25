@@ -16,6 +16,8 @@ RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 APPROVED_KEY = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
 APPROVED32_KEY = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run32"
 APP_VALUE = "PawpalCat"
+INSTALL_MARKER = "pawpal-installed.marker"
+INSTALL_MARKER_CONTENT = "PawpalCat installed layout v1"
 
 
 class WindowsRegistry:
@@ -76,12 +78,17 @@ class StartupManager:
         if bundle_kind not in {"onedir", "onefile"}:
             raise ValueError("bundle_kind must be onedir or onefile")
         self.bundle_kind = bundle_kind
+        self.frozen = bool(getattr(sys, "frozen", False)) if frozen is None else bool(frozen)
+        try:
+            self.installed = (self.frozen and self.executable.name.lower() == "pawpalcat.exe" and
+                              self.executable.with_name(INSTALL_MARKER).read_text(encoding="utf-8").strip() == INSTALL_MARKER_CONTENT)
+        except (OSError, UnicodeError):
+            self.installed = False
         # Separate layouts keep a onefile upgrade away from old onedir DLLs.
         # Legacy app/PawpalCat.exe and unknown files are left untouched.
         self._managed_root = self.data_root / "app"
-        self.stable_path = self._managed_root / bundle_kind / "PawpalCat.exe"
+        self.stable_path = self.executable if self.installed else self._managed_root / bundle_kind / "PawpalCat.exe"
         self.registry = registry if registry is not None else WindowsRegistry()
-        self.frozen = bool(getattr(sys, "frozen", False)) if frozen is None else bool(frozen)
 
     def _managed_destination(self, path: Path) -> Path:
         resolved = path.resolve()
@@ -90,6 +97,14 @@ class StartupManager:
         return resolved
 
     def _bundle_error(self) -> str | None:
+        if self.installed:
+            if not self.executable.is_file():
+                return "Installed executable is missing"
+            if self.bundle_kind == "onedir":
+                required = (f"python{sys.version_info.major}{sys.version_info.minor}.dll", "base_library.zip")
+                if any(not (self._source_internal / name).is_file() for name in required):
+                    return "Installed Python dependencies are missing"
+            return None
         self._managed_destination(self.stable_path)
         if not self.stable_path.is_file():
             return "Startup executable is missing"
@@ -140,6 +155,11 @@ class StartupManager:
             raise OSError("source_run")
         if not self.executable.is_file():
             raise FileNotFoundError("The packaged executable was not found")
+        if self.installed:
+            error = self._bundle_error()
+            if error:
+                raise OSError(error)
+            return
         self._managed_destination(self.stable_path)
         if self.executable == self.stable_path.resolve():
             error = self._bundle_error()

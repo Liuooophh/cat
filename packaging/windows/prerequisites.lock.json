@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "files": [
+    {
+      "name": "PawnIO_setup.exe",
+      "cache_name": "PawnIO_setup-2.2.0.exe",
+      "version": "2.2.0",
+      "url": "https://github.com/namazso/PawnIO.Setup/releases/download/2.2.0/PawnIO_setup.exe",
+      "sha256": "1f519a22e47187f70a1379a48ca604981c4fcf694f4e65b734aaa74a9fba3032",
+      "publisher": "namazso"
+    },
+    {
+      "name": "ndp48-web.exe",
+      "cache_name": "ndp48-web.exe",
+      "version": "4.8",
+      "url": "https://download.visualstudio.microsoft.com/download/pr/2d6bb6b2-226a-4baa-bdec-798822606ff1/9b7b8746971ed51a1770ae4293618187/ndp48-web.exe",
+      "sha256": "0bba3094588c4bfec301939985222a20b340bf03431563dec8b2b4478b06fffa",
+      "publisher": "Microsoft Corporation"
+    }
+  ]
+}

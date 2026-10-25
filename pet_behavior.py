@@ -130,6 +130,14 @@ class PetBehaviorManager:
             self.next_autonomous_check, now + random.uniform(30.0, 70.0),
         )
 
+    def shift_time(self, seconds: float) -> None:
+        """Freeze behavior deadlines while the pet is hidden in the tray."""
+        self.state_started += seconds
+        self.last_activity += seconds
+        self.next_autonomous_check += seconds
+        if self.state_until:
+            self.state_until += seconds
+
     def update(self, *, now: float | None = None) -> bool:
         now = time.monotonic() if now is None else now
         if (self.state != "idle" and self.state_until is not None

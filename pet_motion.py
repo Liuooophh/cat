@@ -97,6 +97,16 @@ class MotionPlayer:
         self._terminal_at = None
         self._loop_repeats = 0
 
+    def shift_time(self, seconds: float) -> None:
+        """Resume the same frame and request identity after a hidden interval."""
+        self._phase_started += seconds
+        self._last_now += seconds
+        if self._terminal_at is not None:
+            self._terminal_at += seconds
+        state, started = self._request_key
+        if started is not None:
+            self._request_key = (state, started+seconds)
+
     def force_idle(self, now: float) -> MotionPose:
         """Immediately cancel any gesture for an explicit hard reset."""
         now = self._clock(now)

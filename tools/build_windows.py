@@ -58,7 +58,7 @@ def verify_cat_video_assets(asset_dir: Path) -> None:
 def main() -> None:
     root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--name", default="PawpalCat-v6.3")
+    parser.add_argument("--name", default="PawpalCat-v6.11")
     parser.add_argument("--output-dir", type=Path, default=root / "dist")
     layout = parser.add_mutually_exclusive_group()
     layout.add_argument("--onedir", action="store_true", help="Build a portable directory (default)")
@@ -91,17 +91,27 @@ def main() -> None:
         "--windowed", "--onefile" if args.onefile else "--onedir", "--name", args.name,
         "--icon", str(root / "pet_icon.ico"),
         "--add-data", f"{root / 'assets/cat'};assets/cat",
+        "--add-data", f"{root / 'assets/ui'};assets/ui",
         "--add-data", f"{root / 'assets/vendor'};assets/vendor",
         "--add-data", f"{root / 'pet_icon.png'};.",
         "--add-data", f"{root / 'pet_icon.ico'};.",
         "--hidden-import", "pystray._win32",
         "--hidden-import", "clr",
         "--hidden-import", "_cffi_backend",
+        "--hidden-import", "tencentcloud.asr.v20190614.asr_client",
+        "--hidden-import", "tencentcloud.asr.v20190614.models",
+        "--hidden-import", "tencentcloud.tts.v20190823.tts_client",
+        "--hidden-import", "tencentcloud.tts.v20190823.models",
+        "--collect-all", "sounddevice",
+        "--additional-hooks-dir", str(root / "tools/pyinstaller_hooks"),
         "--collect-all", "pythonnet",
         "--collect-all", "clr_loader",
         "--copy-metadata", "pythonnet",
         "--copy-metadata", "clr-loader",
         "--copy-metadata", "cffi",
+        "--copy-metadata", "tencentcloud-sdk-python-common",
+        "--copy-metadata", "tencentcloud-sdk-python-asr",
+        "--copy-metadata", "tencentcloud-sdk-python-tts",
         *runtime_resources,
         "--exclude-module", "numpy", "--exclude-module", "matplotlib",
         "--distpath", str(args.output_dir.resolve()),

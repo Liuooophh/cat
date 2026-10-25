@@ -80,7 +80,7 @@ class CatAppTests(unittest.TestCase):
         migrated = self.pet._load_settings()
         self.assertEqual(migrated["model"], "local-model")
         self.assertEqual(migrated["weather_city"], "上海")
-        self.assertEqual(migrated["pet_scale"], 1.2)
+        self.assertAlmostEqual(migrated["pet_scale"], 1.2 / APP_MODULE.PET_SIZE_BASELINE)
         for setting in ("cpu_reactions", "night_reactions"):
             self.assertFalse(migrated[setting])
         self.assertNotIn("voice_reply_enabled", migrated)
@@ -425,10 +425,46 @@ class CatAppTests(unittest.TestCase):
         self.assertEqual(self.pet.behavior.state, "groom")
         self.pet._on_action.assert_called_once()
 
-    def test_tts_controls_and_calls_are_removed_from_main(self) -> None:
-        source = (SOURCE_DIR / "desktop_ai_pet.pyw").read_text(encoding="utf-8-sig")
-        for old_name in ("voice_reply_enabled", "WindowsSpeechOutput", "_speak_reply", "speech_output"):
-            self.assertNotIn(old_name, source)
+    def test_cloud_tts_is_opt_in_and_ignores_retired_voice_setting(self) -> None:
+        self.pet.settings_path = self.directory_path / "settings.json"
+        self.pet.settings_path.write_text(json.dumps({"voice_reply_enabled": True}), encoding="utf-8")
+        self.assertFalse(self.pet._load_settings()["tencent_speech"]["auto_play"])
+        self.pet.settings = {"tencent_speech": {"auto_play": False}}
+        self.pet._play_voice_reply = Mock()
+        self.pet._speech_credentials = Mock()
+        self.pet._auto_read_reply("你好")
+        self.pet._play_voice_reply.assert_not_called()
+        self.pet._speech_credentials.assert_not_called()
+
+    def test_auto_speech_does_not_interrupt_recording_or_use_malay_voice(self) -> None:
+        from pet_cloud_voice import SpeechCredentials
+        self.pet.settings = {"tencent_speech": {"auto_play": True}}
+        self.pet.chat_text = Mock()
+        self.pet._speech_credentials = Mock(return_value=SpeechCredentials("test", "test"))
+        self.pet._play_voice_reply = Mock()
+        self.pet.mic_listening = True
+        self.pet._auto_read_reply("你好")
+        self.pet._play_voice_reply.assert_not_called()
+        self.pet.mic_listening = False
+        self.pet.language = "ms"
+        self.pet._auto_read_reply("Hello")
+        self.pet._play_voice_reply.assert_not_called()
+        self.pet.language = "en"
+        self.pet._auto_read_reply("Hello")
+        self.pet._play_voice_reply.assert_called_once()
+
+    def test_closing_chat_invalidates_callbacks_and_cancels_audio(self) -> None:
+        self.pet.speech_input = Mock()
+        self.pet.speech_output = Mock()
+        self.pet._voice_generation = 2
+        self.pet._speech_input_generation = 3
+        self.pet._voice_button = Mock()
+        self.pet._close_chat()
+        self.pet.speech_input.stop.assert_called_once_with()
+        self.pet.speech_output.stop.assert_called_once_with()
+        self.assertEqual(self.pet._voice_generation, 3)
+        self.assertEqual(self.pet._speech_input_generation, 4)
+        self.assertFalse(self.pet.mic_listening)
 
     def test_actual_tray_library_accepts_action_callbacks_and_captures_each_state(self) -> None:
         try:

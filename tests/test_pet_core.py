@@ -183,9 +183,10 @@ class PetSizeTests(unittest.TestCase):
 
         pet._apply_pet_scale(1.5)
 
-        self.assertEqual((pet.window_width, pet.window_height), (510, 615))
+        self.assertAlmostEqual(pet.window_width, 340 * 1.5 * .85, delta=.5)
+        self.assertAlmostEqual(pet.window_height, 410 * 1.5 * .85, delta=.5)
         self.assertEqual(pet.settings["pet_scale"], 1.5)
-        pet._create_surface_bitmap.assert_called_once_with(510, 615)
+        pet._create_surface_bitmap.assert_called_once_with(pet.window_width, pet.window_height)
 
 
 class ClickHandlingTests(unittest.TestCase):
@@ -222,6 +223,7 @@ class ClickHandlingTests(unittest.TestCase):
         pet._toggle_speech_input()
 
         pet.speech_input.stop.assert_not_called()
+        pet.speech_input.finish.assert_called_once_with()
         pet._finish_speech_input.assert_not_called()
 
 

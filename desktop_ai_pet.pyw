@@ -24,16 +24,18 @@ from datetime import datetime
 from pet_context import (ContextReactionScheduler, WeatherReading, WeatherLocation,
                          fetch_weather, fetch_weather_at)
 from pet_ai import ChatError, request_chat, credential_target as ai_credential_target, migrate_model_name
-from pet_i18n import LANGUAGES, localize, normalize_language, weather_condition
+from pet_i18n import LANGUAGES, localize, normalize_language, weather_condition, tr
 from pet_metrics import MetricsMonitor
 from pet_startup import StartupManager, SingleInstance
 from pet_tray import temperature_lines, temperature_tooltip, temperature_icon, representative_values
 from pet_visual_effects import draw_sleep_zzz
 from pet_behavior import PetAction, PetBehaviorManager
 from pet_dialogue import DialogueManager
+from pet_window_surface import LayeredSurface
 from pet_motion import MotionPlayer
 from pet_presentation import AnimationController, SpeechBubble
-from pet_voice import WindowsSpeechInput
+from pet_cloud_voice import (TencentSpeechInput, TencentSpeechOutput, SpeechCredentials,
+                             CREDENTIAL_TARGET, VOICES, error_text, voice_settings)
 
 
 APP_NAME = "猫咪"
@@ -46,70 +48,23 @@ SPRITE_TOP = 112
 FRAME_PERIOD = 1.0 / 24.0
 MIN_PET_SCALE = 0.5
 MAX_PET_SCALE = 1.5
-DEFAULT_PET_SCALE = 1.3
+PET_SIZE_BASELINE = 0.85
+DEFAULT_PET_SCALE = 1.0
 OPENAI_ENDPOINT = "https://api.openai.com/v1"
 OPENAI_MODEL = "gpt-5-mini"
 DEEPSEEK_ENDPOINT = "https://api.deepseek.com"
 DEEPSEEK_MODEL = "deepseek-flash"
-WS_EX_LAYERED = 0x00080000
-GWL_EXSTYLE = -20
-ULW_ALPHA = 0x00000002
-AC_SRC_OVER = 0x00
-AC_SRC_ALPHA = 0x01
-BI_RGB = 0
 CRED_TYPE_GENERIC = 1
 CRED_PERSIST_LOCAL_MACHINE = 2
 ERROR_NOT_FOUND = 1168
 SYSTEM_PROMPT = (
-    "你是住在用户桌面上的一只安静的狸花猫。平时像真实猫咪一样休息、观察、舔毛，"
+    "你是住在用户桌面上的一只安静的银渐层猫，品种为英国短毛猫，毛色是银渐层。平时像真实猫咪一样休息、观察、舔毛，"
     "不主动唠叨、不扮演大哥、不长篇吐槽。用户主动聊天时，用自然、温和的语言回应，"
     "默认一到三句，不必每次加喵或猫咪动作描写，不使用夸张颜文字。"
     "用户需要实际帮助时认真回答，不让角色扮演妨碍清楚表达。"
     "不要声称看见屏幕、读取文件或控制电脑；没有工具就坦诚说明。"
     "关心用户但不过度说教，不套用影视作品台词。"
 )
-
-
-class _SIZE(ctypes.Structure):
-    _fields_ = [("cx", wintypes.LONG), ("cy", wintypes.LONG)]
-
-
-class _BLENDFUNCTION(ctypes.Structure):
-    _fields_ = [
-        ("BlendOp", ctypes.c_ubyte),
-        ("BlendFlags", ctypes.c_ubyte),
-        ("SourceConstantAlpha", ctypes.c_ubyte),
-        ("AlphaFormat", ctypes.c_ubyte),
-    ]
-
-
-class _BITMAPINFOHEADER(ctypes.Structure):
-    _fields_ = [
-        ("biSize", wintypes.DWORD),
-        ("biWidth", wintypes.LONG),
-        ("biHeight", wintypes.LONG),
-        ("biPlanes", wintypes.WORD),
-        ("biBitCount", wintypes.WORD),
-        ("biCompression", wintypes.DWORD),
-        ("biSizeImage", wintypes.DWORD),
-        ("biXPelsPerMeter", wintypes.LONG),
-        ("biYPelsPerMeter", wintypes.LONG),
-        ("biClrUsed", wintypes.DWORD),
-        ("biClrImportant", wintypes.DWORD),
-    ]
-
-
-class _RGBQUAD(ctypes.Structure):
-    _fields_ = [
-        ("rgbBlue", ctypes.c_ubyte),
-        ("rgbGreen", ctypes.c_ubyte),
-        ("rgbRed", ctypes.c_ubyte),
-        ("rgbReserved", ctypes.c_ubyte),
-    ]
-
-
-class _BITMAPINFO(ctypes.Structure):
-    _fields_ = [("bmiHeader", _BITMAPINFOHEADER), ("bmiColors", _RGBQUAD * 1)]
 
 
 class _CREDENTIAL_ATTRIBUTEW(ctypes.Structure):
@@ -172,7 +127,7 @@ def rounded_polygon(canvas: tk.Canvas, x1: int, y1: int, x2: int, y2: int,
     return canvas.create_polygon(points, smooth=True, splinesteps=18, **kwargs)
 
 
-class DesktopPet:
+class DesktopPet(LayeredSurface):
     def __init__(self) -> None:
         self.root = tk.Tk(className="TuanziPet")
         self.root.iconbitmap(default=str(resource_path("pet_icon.ico")))
@@ -203,11 +158,18 @@ class DesktopPet:
         self.next_cpu_sample = 0.0
         self.next_status_refresh = 0.0
         self.context_reactions = ContextReactionScheduler()
-        self.speech_input = WindowsSpeechInput()
+        self.speech_input = TencentSpeechInput()
+        self.speech_output = TencentSpeechOutput()
+        self._voice_generation = self._speech_input_generation = 0
+        self._voice_button = self._last_reply_button = None
+        self._voice_reply_pending = self._quick_voice_mode = False
+        self.pet_hidden = False
+        self._hidden_at = None
+        self._animation_job = None
         self.companion_window: tk.Toplevel | None = None
         self.pet_scale = self._normalize_pet_scale(self.settings.get("pet_scale"))
-        self.window_width = max(1, round(self.width * self.pet_scale))
-        self.window_height = max(1, round(self.height * self.pet_scale))
+        self.window_width = max(1, round(self.width * self.render_scale))
+        self.window_height = max(1, round(self.height * self.render_scale))
         self._size_resize_job: str | None = None
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
@@ -287,6 +249,9 @@ class DesktopPet:
         self.root.bind("<Motion>", self._on_hover_motion)
         self.root.bind("<Leave>", self._hide_hover_bubble)
         self._init_layered_surface()
+        from pet_quick_voice import QuickVoiceControl
+        self.quick_voice = QuickVoiceControl(self)
+        self.quick_voice.start()
         self._enable_animation_timer()
         self.root.protocol("WM_DELETE_WINDOW", self._quit_app)
         self._start_tray_icon()
@@ -368,102 +333,8 @@ class DesktopPet:
         except (OSError, AttributeError):
             pass
 
-    def _init_layered_surface(self) -> None:
-        if os.name != "nt":
-            raise OSError("猫咪的逐像素透明桌宠窗口需要在 Windows 上运行。")
 
-        self.root.update_idletasks()
-        # On Windows Tk's winfo_id() is the client child; wm frame is the
-        # top-level HWND that Windows requires for UpdateLayeredWindow.
-        frame_hwnd = int(str(self.root.tk.call("wm", "frame", self.root._w)), 0)
-        self.hwnd = wintypes.HWND(frame_hwnd)
-        self.gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
-        self.user32 = ctypes.WinDLL("user32", use_last_error=True)
 
-        get_style = getattr(self.user32, "GetWindowLongPtrW", None)
-        set_style = getattr(self.user32, "SetWindowLongPtrW", None)
-        if get_style is None:
-            get_style = self.user32.GetWindowLongW
-        if set_style is None:
-            set_style = self.user32.SetWindowLongW
-        get_style.argtypes = [wintypes.HWND, ctypes.c_int]
-        get_style.restype = ctypes.c_ssize_t
-        set_style.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_ssize_t]
-        set_style.restype = ctypes.c_ssize_t
-        style = get_style(self.hwnd, GWL_EXSTYLE)
-        set_style(self.hwnd, GWL_EXSTYLE, style | WS_EX_LAYERED)
-
-        self.user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
-        self.user32.GetAsyncKeyState.restype = ctypes.c_short
-        self.user32.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
-        self.user32.GetCursorPos.restype = wintypes.BOOL
-
-        self.gdi32.CreateCompatibleDC.argtypes = [wintypes.HDC]
-        self.gdi32.CreateCompatibleDC.restype = wintypes.HDC
-        self.gdi32.CreateDIBSection.argtypes = [
-            wintypes.HDC, ctypes.POINTER(_BITMAPINFO), wintypes.UINT,
-            ctypes.POINTER(ctypes.c_void_p), wintypes.HANDLE, wintypes.DWORD,
-        ]
-        self.gdi32.CreateDIBSection.restype = wintypes.HBITMAP
-        self.gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HANDLE]
-        self.gdi32.SelectObject.restype = wintypes.HANDLE
-        self.gdi32.DeleteObject.argtypes = [wintypes.HANDLE]
-        self.gdi32.DeleteObject.restype = wintypes.BOOL
-        self.gdi32.DeleteDC.argtypes = [wintypes.HDC]
-        self.gdi32.DeleteDC.restype = wintypes.BOOL
-
-        self.user32.UpdateLayeredWindow.argtypes = [
-            wintypes.HWND, wintypes.HDC, ctypes.POINTER(wintypes.POINT),
-            ctypes.POINTER(_SIZE), wintypes.HDC, ctypes.POINTER(wintypes.POINT),
-            wintypes.COLORREF, ctypes.POINTER(_BLENDFUNCTION), wintypes.DWORD,
-        ]
-        self.user32.UpdateLayeredWindow.restype = wintypes.BOOL
-
-        self._mem_dc = self.gdi32.CreateCompatibleDC(None)
-        if not self._mem_dc:
-            raise ctypes.WinError(ctypes.get_last_error())
-        self._dib = None
-        self._old_bitmap = None
-        self._create_surface_bitmap(self.window_width, self.window_height)
-
-    def _create_surface_bitmap(self, width: int, height: int) -> None:
-        if getattr(self, "_dib", None):
-            if getattr(self, "_old_bitmap", None):
-                self.gdi32.SelectObject(self._mem_dc, self._old_bitmap)
-            self.gdi32.DeleteObject(self._dib)
-
-        bitmap_info = _BITMAPINFO()
-        bitmap_info.bmiHeader = _BITMAPINFOHEADER(
-            ctypes.sizeof(_BITMAPINFOHEADER), width, -height,
-            1, 32, BI_RGB, 0, 0, 0, 0, 0,
-        )
-        self._dib_bits = ctypes.c_void_p()
-        self._dib = self.gdi32.CreateDIBSection(
-            self._mem_dc, ctypes.byref(bitmap_info), 0,
-            ctypes.byref(self._dib_bits), None, 0,
-        )
-        if not self._dib or not self._dib_bits.value:
-            raise ctypes.WinError(ctypes.get_last_error())
-        self._old_bitmap = self.gdi32.SelectObject(self._mem_dc, self._dib)
-        self.surface_width, self.surface_height = width, height
-
-    def _present_layered_frame(self, image: object) -> None:
-        from PIL import Image
-
-        # UpdateLayeredWindow expects premultiplied BGRA pixels in a top-down DIB.
-        premultiplied = image.convert("RGBa")
-        red, green, blue, alpha = premultiplied.split()
-        bgra = Image.merge("RGBA", (blue, green, red, alpha)).tobytes()
-        ctypes.memmove(self._dib_bits, bgra, len(bgra))
-        destination = wintypes.POINT(self.root.winfo_x(), self.root.winfo_y())
-        source = wintypes.POINT(0, 0)
-        size = _SIZE(self.window_width, self.window_height)
-        blend = _BLENDFUNCTION(AC_SRC_OVER, 0, 255, AC_SRC_ALPHA)
-        if not self.user32.UpdateLayeredWindow(
-            self.hwnd, None, ctypes.byref(destination), ctypes.byref(size),
-            self._mem_dc, ctypes.byref(source), 0, ctypes.byref(blend), ULW_ALPHA,
-        ):
-            raise ctypes.WinError(ctypes.get_last_error())
 
     def _draw(self) -> None:
         from PIL import Image, ImageDraw
@@ -525,21 +396,6 @@ class DesktopPet:
             ).convert("RGBA")
         self._present_layered_frame(frame)
 
-    def _release_layered_surface(self) -> None:
-        timer = getattr(self, "_animation_timer", None)
-        if timer is not None:
-            timer.timeEndPeriod(1)
-            self._animation_timer = None
-        if not hasattr(self, "gdi32"):
-            return
-        if getattr(self, "_mem_dc", None) and getattr(self, "_old_bitmap", None):
-            self.gdi32.SelectObject(self._mem_dc, self._old_bitmap)
-        if getattr(self, "_dib", None):
-            self.gdi32.DeleteObject(self._dib)
-            self._dib = None
-        if getattr(self, "_mem_dc", None):
-            self.gdi32.DeleteDC(self._mem_dc)
-            self._mem_dc = None
 
     @staticmethod
     def _load_api_key(target: str = "TuanziDesktopPet/OpenAI") -> str:
@@ -631,7 +487,12 @@ class DesktopPet:
 
     def _tray_menu(self):
         import pystray
-        items = [pystray.MenuItem(self._t("和猫咪聊天"), self._tray_open_chat, default=True)]
+        hidden = getattr(self, "pet_hidden", False)
+        items = [
+            pystray.MenuItem(self._t("显示猫咪" if hidden else "隐藏猫咪"),
+                             self._tray_show_pet if hidden else self._tray_hide_pet, default=hidden),
+            pystray.MenuItem(self._t("和猫咪聊天"), self._tray_open_chat, default=not hidden),
+        ]
         actions = (("点击互动", "click"), ("吃猫粮", "eat"), ("洗脸", "groom"),
                    ("睡觉", "sleep"), ("唤醒", "idle"))
         def action_handler(state):
@@ -721,6 +582,51 @@ class DesktopPet:
     def _tray_open_chat(self, _icon: object, _item: object) -> None:
         self._schedule_ui(self.open_chat)
 
+    def _tray_hide_pet(self, _icon: object, _item: object) -> None:
+        self._schedule_ui(self._hide_pet)
+
+    def _tray_show_pet(self, _icon: object, _item: object) -> None:
+        self._schedule_ui(self._show_pet)
+
+    def _hide_pet(self) -> None:
+        if getattr(self, "pet_hidden", False) or self.tray_icon is None:
+            return
+        self.pet_hidden = True
+        self._hidden_at = time.monotonic()
+        self._close_context_menu()
+        self._cancel_voice_jobs()
+        self.quick_voice.active = False
+        self.quick_voice.text = ""
+        self.quick_voice._terminal_until = 0.0
+        self.quick_voice.hide()
+        self.bubble.hide()
+        self.bubble.alpha = 0.0
+        self.hover_inside = self.hover_bubble = self.context_bubble_active = False
+        self.drag_start = None
+        self.root.withdraw()
+        self._tray_metrics_signature = None
+        self._update_tray_metrics()
+
+    def _show_pet(self) -> None:
+        if not getattr(self, "pet_hidden", False):
+            return
+        elapsed = max(0.0, time.monotonic()-self._hidden_at)
+        self.behavior.shift_time(elapsed)
+        self.motion.shift_time(elapsed)
+        for name in ("_visual_started", "_transition_started", "_sleep_breath_started", "walk_step_time"):
+            if getattr(self, name, None) is not None:
+                setattr(self, name, getattr(self, name)+elapsed)
+        self.pet_hidden = False
+        self._hidden_at = None
+        self.root.deiconify()
+        self.root.lift()
+        self._tray_metrics_signature = None
+        self._update_tray_metrics()
+        job = getattr(self, "_animation_job", None)
+        if job is not None:
+            self.root.after_cancel(job)
+        self._animation_job = self.root.after(0, self._animate)
+
     def _tray_open_settings(self, _icon: object, _item: object) -> None:
         self._schedule_ui(self.open_settings)
 
@@ -735,7 +641,9 @@ class DesktopPet:
 
     def _quit_app(self) -> None:
         self._close_context_menu()
-        self.speech_input.stop()
+        self._cancel_voice_jobs()
+        if getattr(self, "quick_voice", None) is not None:
+            self.quick_voice.close()
         self.metrics.stop()
         self.animation.close()
         if getattr(self, "temperature_tray_icon", None) is not None:
@@ -777,6 +685,21 @@ class DesktopPet:
             return DEFAULT_PET_SCALE
         return min(MAX_PET_SCALE, max(MIN_PET_SCALE, scale))
 
+    @property
+    def render_scale(self) -> float:
+        """The new displayed 100% has the physical size of the old 85%."""
+        return self.pet_scale * PET_SIZE_BASELINE
+
+    @classmethod
+    def _saved_pet_scale(cls, data: dict) -> float:
+        value = data.get("pet_scale")
+        if value is not None and data.get("pet_size_baseline_version") != 2:
+            try:
+                value = float(value) / PET_SIZE_BASELINE
+            except (TypeError, ValueError, OverflowError):
+                value = None
+        return cls._normalize_pet_scale(value)
+
     def _load_settings(self) -> dict[str, object]:
         try:
             data = json.loads(self.settings_path.read_text(encoding="utf-8"))
@@ -790,10 +713,13 @@ class DesktopPet:
         model = migrate_model_name(endpoint, model)
         if provider_name_for_endpoint(endpoint) == "OpenAI" and model == "gpt-5.6-sol":
             model = OPENAI_MODEL
+        stored_location = data.get("weather_location")
+        stored_city = data.get("weather_city") or (stored_location.get("name", "") if isinstance(stored_location, dict) else "")
         return {
             "endpoint": endpoint, "model": model,
-            "pet_scale": self._normalize_pet_scale(data.get("pet_scale")),
-            "weather_city": str(data.get("weather_city") or "").strip(),
+            "pet_scale": self._saved_pet_scale(data),
+            "pet_size_baseline_version": 2,
+            "weather_city": str(stored_city).strip(),
             "weather_location": data.get("weather_location") if isinstance(data.get("weather_location"), dict) else None,
             "language": normalize_language(data.get("language")),
             "cat_profile_version": 1, "cat_settings_version": 3,
@@ -803,6 +729,7 @@ class DesktopPet:
             "show_fps": bool(data.get("show_fps", True)),
             "show_temperature": bool(data.get("show_temperature", True)),
             "start_with_windows": bool(data.get("start_with_windows", True)),
+            "tencent_speech": voice_settings(data.get("tencent_speech")),
             "ai_profiles": {str(name): {"endpoint": str(value.get("endpoint", "")),
                                        "model": migrate_model_name(str(value.get("endpoint", "")), str(value.get("model", "")))}
                             for name, value in data.get("ai_profiles", {}).items() if isinstance(value, dict)}
@@ -828,8 +755,9 @@ class DesktopPet:
         old_width, old_height = self.window_width, self.window_height
         self.pet_scale = scale
         self.settings["pet_scale"] = scale
-        self.window_width = max(1, round(self.width * scale))
-        self.window_height = max(1, round(self.height * scale))
+        self.settings["pet_size_baseline_version"] = 2
+        self.window_width = max(1, round(self.width * self.render_scale))
+        self.window_height = max(1, round(self.height * self.render_scale))
         if (self.window_width, self.window_height) == (old_width, old_height):
             return
 
@@ -847,6 +775,11 @@ class DesktopPet:
     def _animate(self) -> None:
         frame_started = time.perf_counter()
         now = time.monotonic()
+        if getattr(self, "pet_hidden", False):
+            self._sample_cpu(now)
+            self._maybe_refresh_weather(now)
+            self._animation_job = self.root.after(1000, self._animate)
+            return
         self._track_hover_pointer()
         self._sample_cpu(now)
         self._maybe_refresh_weather(now)
@@ -885,7 +818,7 @@ class DesktopPet:
         self._draw()
         try:
             spent = time.perf_counter() - frame_started
-            self.root.after(max(1, round((FRAME_PERIOD - spent) * 1000)), self._animate)
+            self._animation_job = self.root.after(max(1, round((FRAME_PERIOD - spent) * 1000)), self._animate)
         except tk.TclError:
             return
 
@@ -1016,7 +949,7 @@ class DesktopPet:
         current_x = getattr(self, "_walk_position_x", None)
         if current_x is None:
             current_x = float(self.root.winfo_x())
-        next_x = current_x + self.walk_direction * 30 * getattr(self, "pet_scale", 1.0) * elapsed * weight
+        next_x = current_x + self.walk_direction * 30 * getattr(self, "render_scale", PET_SIZE_BASELINE) * elapsed * weight
         if next_x <= left_limit:
             next_x = left_limit
             if self.behavior.state == "walk":
@@ -1063,13 +996,15 @@ class DesktopPet:
             self.hover_bubble = False
 
     def _hover_over_pet(self, x: int, y: int) -> bool:
-        x = round(x / self.pet_scale)
-        y = round(y / self.pet_scale)
+        x = round(x / self.render_scale)
+        y = round(y / self.render_scale)
         left, top, right, bottom = self.current_sprite_bbox
         return left <= x <= right and top <= y <= bottom
 
     def _on_hover_motion(self, event: tk.Event) -> None:
         self._set_hover(self._hover_over_pet(event.x, event.y))
+        if getattr(self, "quick_voice", None) is not None:
+            self.quick_voice.tick(event.x_root, event.y_root)
 
     def _track_hover_pointer(self) -> None:
         if self.user32 is None:
@@ -1111,6 +1046,8 @@ class DesktopPet:
         self.drag_start = None
 
     def _choose_action(self, state: str) -> None:
+        if getattr(self, "pet_hidden", False):
+            self._show_pet()
         self._hide_context_bubble()
         if state == "idle":
             self.pending_action = None
@@ -1130,6 +1067,8 @@ class DesktopPet:
 
     def _show_menu(self, event: tk.Event) -> None:
         self._hide_context_bubble()
+        if getattr(self, "quick_voice", None) is not None:
+            self.quick_voice.hide()
         if self.context_window is not None and self.context_window.winfo_exists():
             self._close_context_menu()
         popup = tk.Toplevel(self.root)
@@ -1141,7 +1080,7 @@ class DesktopPet:
             popup.wm_attributes("-transparentcolor", KEY_COLOR)
         except tk.TclError:
             popup.attributes("-alpha", 0.98)
-        menu_w, menu_h = 300, 482
+        menu_w, menu_h = 300, 529
         x = min(event.x_root, popup.winfo_screenwidth() - menu_w - 8)
         y = min(event.y_root, popup.winfo_screenheight() - menu_h - 8)
         popup.geometry(f"{menu_w}x{menu_h}+{max(0, x)}+{max(0, y)}")
@@ -1161,6 +1100,7 @@ class DesktopPet:
             ("wake", "唤醒", lambda: self._choose_action("idle")),
             ("companion", "通用设置", self.open_companion_settings),
             ("size", "调整桌宠大小", self.open_size_settings),
+            ("hide", "隐藏猫咪", self._hide_pet),
             ("quit", "退出猫咪", self._quit_app),
         ]
         for index, (tag, label, action) in enumerate(actions):
@@ -1367,9 +1307,7 @@ class DesktopPet:
             self.chat_input.focus_set()
 
     def _close_chat(self) -> None:
-        if self.mic_listening:
-            self.speech_input.stop()
-            self.mic_listening = False
+        self._cancel_voice_jobs()
         if self.chat_window is not None:
             self.chat_window.destroy()
         self.chat_window = None
@@ -1380,31 +1318,76 @@ class DesktopPet:
         self.mic_canvas = None
         self.chat_drag_origin = None
 
-    def _toggle_speech_input(self) -> None:
+    def _voice_status(self, key, *, error=None, terminal=False):
+        text = error_text(error, self.language) if error else tr(key, self.language)
+        if getattr(self, "chat_status", None) is not None:
+            self.chat_status.configure(text=text)
+        if getattr(self, "_quick_voice_mode", False) and getattr(self, "quick_voice", None) is not None:
+            self.quick_voice.set_status(text, terminal=terminal, phase=key)
+
+    def _toggle_quick_voice(self):
+        if getattr(self, "_quick_voice_mode", False):
+            self._cancel_quick_voice()
+        else:
+            self._toggle_speech_input(quick=True)
+
+    def _cancel_quick_voice(self):
+        self._cancel_voice_jobs()
+
+    def _toggle_speech_input(self, *, quick=False) -> None:
         if self.mic_listening:
+            self.speech_input.finish()
             if self.chat_status is not None:
-                self.chat_status.configure(text=self._t("还在听；说完停顿一下，识别后会填进输入框。"))
+                self.chat_status.configure(text=tr("voice.transcribing", getattr(self, "language", "zh-CN")))
             return
-        if self.chat_input is None:
+        if self.chat_input is None and not quick:
             return
+        self._quick_voice_mode = quick
+        if self.waiting or self.speech_input.listening:
+            self._voice_status("voice.waiting", terminal=True)
+            self._quick_voice_mode = False
+            return
+        credentials = self._speech_credentials()
+        if not credentials.valid:
+            if self.chat_status is not None:
+                self.chat_status.configure(text=tr("voice.credentials_missing", self.language))
+            self.open_speech_settings()
+            return
+        self._stop_voice_reply()
+        self._speech_input_generation += 1
+        generation = self._speech_input_generation
+        options = voice_settings(self.settings.get("tencent_speech"))
         self.mic_listening = True
         if self.mic_canvas is not None:
             self.mic_canvas.itemconfigure("mic_bg", fill="#f7e4e5")
             self.mic_canvas.itemconfigure("mic_icon", fill="#b64d58")
-        if self.chat_status is not None:
-            self.chat_status.configure(text=self._t("正在听你说话；说完停顿一下，识别后会填进输入框。"))
+        self._voice_status("voice.recording")
 
         def completed(text: str | None, error: str | None) -> None:
             try:
-                self.root.after(0, lambda: self._finish_speech_input(text, error))
+                def finish():
+                    if generation == self._speech_input_generation:
+                        self._finish_speech_input(text, error_text(error, self.language) if error else None,
+                                                  auto_send=quick or options["auto_send"], quick=quick)
+                self.root.after(0, finish)
             except tk.TclError:
                 return
 
-        if not self.speech_input.start(completed):
+        def phase(key):
+            def update():
+                if generation == self._speech_input_generation:
+                    self._voice_status(key)
+                    if self.mic_canvas is not None:
+                        self.mic_canvas.itemconfigure("mic_bg", fill="#eee8fa")
+                        self.mic_canvas.itemconfigure("mic_icon", fill=PURPLE)
+            self._schedule_ui(update)
+        if not self.speech_input.start(completed, credentials,
+                self.settings.get("tencent_speech"), phase):
             self._finish_speech_input(None, "语音识别正在运行，请稍等。")
 
     def _finish_speech_input(self, text: str | None, error: str | None,
-                             *, cancelled: bool = False) -> None:
+                             *, cancelled: bool = False, auto_send=False, quick=False) -> None:
+        self._speech_input_generation = getattr(self, "_speech_input_generation", 0) + 1
         self.mic_listening = False
         if self.mic_canvas is not None:
             try:
@@ -1412,6 +1395,13 @@ class DesktopPet:
                 self.mic_canvas.itemconfigure("mic_icon", fill="#67588a")
             except tk.TclError:
                 self.mic_canvas = None
+        if not cancelled and text and text.strip() and auto_send:
+            self._send_text(text.strip(), open_window=not quick, voice_turn=True)
+            return
+        if quick and (error or not text or not text.strip()):
+            self._voice_status(error or "voice.no_speech", terminal=True)
+            self._quick_voice_mode = False
+            return
         if cancelled or self.chat_input is None:
             if self.chat_status is not None:
                 try:
@@ -1474,9 +1464,106 @@ class DesktopPet:
         self.chat_text.configure(state="normal")
         tag = "user" if speaker == "user" else "pet"
         prefix = self._t("你") + "  " if speaker == "user" else self._t("猫咪") + "  "
-        self.chat_text.insert("end", prefix + text.strip() + "\n\n", tag)
+        self.chat_text.insert("end", prefix, tag)
+        if speaker != "user":
+            language = self.language
+            button = tk.Button(self.chat_text, text="\uE767", font=("Segoe MDL2 Assets", 10),
+                               bg="#fffdfd", fg=PURPLE, bd=0, highlightthickness=0,
+                               activebackground="#eee8fa", activeforeground=PURPLE,
+                               cursor="hand2", padx=4, pady=1, takefocus=True)
+            button.configure(command=lambda: self._play_voice_reply(text, language, button))
+            button.bind("<Enter>", lambda _e: self.chat_status.configure(
+                text=tr("voice.play_hint", self.language)) if self.chat_status is not None else None)
+            self.chat_text.window_create("end", window=button)
+            self.chat_text.insert("end", " ", tag)
+            self._last_reply_button = button
+        self.chat_text.insert("end", text.strip() + "\n\n", tag)
         self.chat_text.configure(state="disabled")
         self.chat_text.see("end")
+
+    def _speech_credentials(self):
+        return SpeechCredentials.parse(self._load_api_key(CREDENTIAL_TARGET))
+
+    def _stop_voice_reply(self):
+        self._voice_generation = getattr(self, "_voice_generation", 0) + 1
+        output = getattr(self, "speech_output", None)
+        if output is not None:
+            output.stop()
+        button = getattr(self, "_voice_button", None)
+        if button is not None:
+            try:
+                button.configure(text="\uE767", fg=PURPLE)
+            except tk.TclError:
+                pass
+        self._voice_button = None
+
+    def _cancel_voice_jobs(self):
+        if getattr(self, "waiting", False) and getattr(self, "_voice_reply_pending", False):
+            self._voice_reply_cancelled = True
+        if getattr(self, "_quick_voice_mode", False) and getattr(self, "quick_voice", None) is not None:
+            self.quick_voice.set_status(tr("voice.cancelled", self.language), terminal=True)
+        self._voice_reply_pending = self._quick_voice_mode = False
+        self._speech_input_generation = getattr(self, "_speech_input_generation", 0) + 1
+        if getattr(self, "speech_input", None) is not None:
+            self.speech_input.stop()
+        self.mic_listening = False
+        self._stop_voice_reply()
+        if getattr(self, "mic_canvas", None) is not None:
+            try:
+                self.mic_canvas.itemconfigure("mic_bg", fill="#eee8fa")
+                self.mic_canvas.itemconfigure("mic_icon", fill="#67588a")
+            except tk.TclError:
+                pass
+
+    def _play_voice_reply(self, text, language, button=None):
+        if button is not None and button is getattr(self, "_voice_button", None):
+            self._stop_voice_reply()
+            if self.chat_status is not None:
+                self.chat_status.configure(text=tr("voice.stopped", self.language))
+            return
+        quick = getattr(self, "_quick_voice_mode", False)
+        self._cancel_voice_jobs()
+        self._quick_voice_mode = quick
+        self._voice_status("voice.synthesizing")
+        generation = self._voice_generation
+        self._voice_button = button
+        if button is not None:
+            button.configure(text="\uE71A", fg="#b64d58")
+        def status(phase, error):
+            def update():
+                if generation != self._voice_generation:
+                    return
+                self._voice_status(phase or "voice.failed", error=error,
+                                   terminal=bool(error) or phase == "voice.finished")
+                if error or phase == "voice.finished":
+                    self._quick_voice_mode = False
+                    self._stop_voice_reply()
+            self._schedule_ui(update)
+        try:
+            self.speech_output.play(text, language, self._speech_credentials(),
+                self.settings.get("tencent_speech"), status)
+        except Exception as exc:
+            status(None, exc)
+
+    def _auto_read_reply(self, text):
+        if getattr(self, "_voice_reply_cancelled", False):
+            self._voice_reply_cancelled = self._voice_reply_pending = False
+            return
+        options = voice_settings(self.settings.get("tencent_speech"))
+        forced = getattr(self, "_voice_reply_pending", False)
+        self._voice_reply_pending = False
+        if ((options["auto_play"] or forced) and not getattr(self, "mic_listening", False)
+                and self.language in VOICES and (self.chat_text is not None or forced)
+                and self._speech_credentials().valid):
+            button = getattr(self, "_last_reply_button", None) if self.chat_text is not None else None
+            self._play_voice_reply(text, self.language, button)
+        elif getattr(self, "_quick_voice_mode", False):
+            self._voice_status("voice.tts_language" if self.language not in VOICES else "voice.finished", terminal=True)
+            self._quick_voice_mode = False
+
+    def open_speech_settings(self):
+        from pet_voice_settings import open_speech_settings
+        open_speech_settings(self)
 
     def _initial_greeting(self) -> str:
         endpoint = self.settings.get("endpoint", "").strip()
@@ -1499,12 +1586,22 @@ class DesktopPet:
             return provider + " · " + self._t(state)
         return self._t("本地轻量陪聊 · 尚未连接 AI 接口")
 
-    def _send_text(self, text: str) -> None:
-        self.open_chat()
+    def _send_text(self, text: str, *, open_window=True, voice_turn=False) -> None:
+        text = text.strip()
+        if not text:
+            return
+        if open_window:
+            self.open_chat()
         self.behavior.mark_activity()
         if self.waiting:
             self._append_message("pet", self._t("我还在想上一条呢，等我一下下～"))
             return
+        self._cancel_voice_jobs()
+        self._voice_reply_pending = voice_turn
+        self._voice_reply_cancelled = False
+        self._quick_voice_mode = voice_turn and not open_window
+        if voice_turn:
+            self._voice_status("voice.thinking")
         self._append_message("user", text)
         self.history.append({"role": "user", "content": text})
         if self._local_data_query(text):
@@ -1512,6 +1609,7 @@ class DesktopPet:
         endpoint = self.settings.get("endpoint", "").strip()
         model = self.settings.get("model", "").strip()
         if not endpoint or not model:
+            self.waiting = True
             self.root.after(450, lambda: self._finish_local_reply(self._offline_reply(text)))
             return
 
@@ -1522,6 +1620,9 @@ class DesktopPet:
             else:
                 prompt = self._t("请先在 AI 接口设置中填写 API 密钥。")
             self._append_message("pet", prompt)
+            self._voice_reply_pending = False
+            self._voice_status(prompt, terminal=True)
+            self._quick_voice_mode = False
             return
         key = self.api_key
         self.waiting = True
@@ -1557,13 +1658,14 @@ class DesktopPet:
                     answer += "\n" + self._t("CPU 温度不可用：可能缺少 PawnIO 或读取权限；诊断步骤见 README。")
                 elif status not in {"ok", "partial", "starting", "disabled"}:
                     answer += "\n" + self._t("温度暂不可用；诊断步骤见 README。")
-            self._append_message("pet", answer)
+            self._finish_data_reply(answer)
             return True
         if weather_query:
             city = str(self.settings.get("weather_city", "")).strip()
             if not city:
-                self._append_message("pet", self._t("请先搜索并选择城市"))
+                self._finish_data_reply(self._t("请先搜索并选择城市"))
                 return True
+            self.waiting = True
             def run():
                 try:
                     stored = self.settings.get("weather_location")
@@ -1571,13 +1673,20 @@ class DesktopPet:
                                if stored else fetch_weather(city, language=self.language))
                     answer = reading.status_text + chr(10) + self._t("更新于") + " " + reading.observed_at + " · Open-Meteo"
                     self._schedule_ui(lambda: (self._finish_weather(city, reading, None),
-                                               self._append_message("pet", answer)))
+                                               self._finish_data_reply(answer)))
                 except (OSError, ValueError) as exc:
                     detail = str(exc)
-                    self._schedule_ui(lambda: self._append_message("pet", detail))
+                    self._schedule_ui(lambda: self._finish_ai(None, detail))
             threading.Thread(target=run, name="pawpal-weather-chat", daemon=True).start()
             return True
         return False
+
+    def _finish_data_reply(self, answer):
+        self.waiting = False
+        if getattr(self, "history", None) is not None:
+            self.history.append({"role": "assistant", "content": answer})
+        self._append_message("pet", answer)
+        self._auto_read_reply(answer)
 
     @staticmethod
     def _offline_reply(text: str) -> str:
@@ -1605,15 +1714,26 @@ class DesktopPet:
             self._append_message("pet", answer)
         elif error:
             self._append_message("pet", error)
+            self._voice_reply_pending = False
+            self._voice_status(error, terminal=True)
+            self._quick_voice_mode = False
         if self.chat_status is not None:
             self.chat_status.configure(text=self._t(self._mode_label()))
 
+        if answer:
+            self._auto_read_reply(answer)
+
     def _finish_local_reply(self, answer: str) -> None:
+        self.waiting = False
+        self.history.append({"role": "assistant", "content": self._t(answer)})
         self._append_message("pet", self._t(answer))
+        self._auto_read_reply(self._t(answer))
 
 
 
     def open_size_settings(self) -> None:
+        if getattr(self, "quick_voice", None) is not None:
+            self.quick_voice.hide()
         if self.size_window is not None:
             try:
                 if self.size_window.winfo_exists():
@@ -1725,6 +1845,14 @@ class DesktopPet:
 
 
 if __name__ == "__main__":
+    if any(argument == "--quick-voice-diagnostics" or argument.startswith("--quick-voice-diagnostics=")
+           for argument in sys.argv[1:]):
+        from pet_quick_voice import run_diagnostics
+        raise SystemExit(run_diagnostics())
+    if any(argument == "--speech-diagnostics" or argument.startswith("--speech-diagnostics=")
+           for argument in sys.argv[1:]):
+        from pet_speech_diagnostics import run_diagnostics
+        raise SystemExit(run_diagnostics(DesktopPet._load_api_key))
     if any(argument == "--system-diagnostics" or argument.startswith("--system-diagnostics=")
            for argument in sys.argv[1:]):
         from pet_diagnostics import run_diagnostics
@@ -1744,6 +1872,9 @@ if __name__ == "__main__":
         app.root.mainloop()
     finally:
         if app is not None:
+            app._cancel_voice_jobs()
+            if getattr(app, "quick_voice", None) is not None:
+                app.quick_voice.close()
             app.metrics.stop()
             app.animation.close()
             app._release_layered_surface()

@@ -1,0 +1,44 @@
+Pawpal Cat installer prerequisites
+
+PawnIO official signed installer 2.2.0
+Copyright (C) 2026 namazso <admin@namazso.eu>
+https://pawnio.eu/
+https://github.com/namazso/PawnIO.Setup/releases/tag/2.2.0
+
+The official signed installer is redistributed byte-for-byte unchanged.
+Its own embedded notice states:
+"PawnIO is provided "as is" without warranty of any kind, either express or
+implied. Use at your own risk. The authors are not liable for any damages
+arising from the use of this software.
+
+All rights reserved.
+This installer can be redistributed unmodified."
+
+The official binary edition has its own license. It is not labelled as MIT
+or as the GPL source edition. Licensing and source-edition information:
+https://github.com/namazso/PawnIO.Modules/wiki/Using-PawnIO-Modules
+https://github.com/namazso/PawnIO
+
+Only the signed edition is offered. No -unrestricted switch or security
+setting changes are used. The user's selected installation requests Windows
+administrator authorization. Installed PawnIO may be shared by other apps
+and is not automatically removed when Pawpal Cat is uninstalled.
+
+Microsoft .NET Framework 4.8 web installer
+Copyright Microsoft Corporation. All rights reserved.
+https://dotnet.microsoft.com/download/dotnet-framework/net48
+https://learn.microsoft.com/dotnet/framework/install/guide-for-developers
+Redistributed unchanged as the Microsoft redistributable bootstrapper.
+Microsoft's installer displays its own terms. Missing runtime installation
+requires internet access, administrator authorization, and possibly a restart.
+The application works without temperature monitoring if it is skipped.
+
+Inno Setup 6.7.3
+Copyright (C) 1997-2026 Jordan Russell. All rights reserved.
+Portions Copyright (C) 2000-2026 Martijn Laan. All rights reserved.
+https://jrsoftware.org/
+Compiler license and Simplified Chinese translation attribution are retained
+beside the build scripts. The compiler is not installed by the product setup.
+
+The application's existing third-party licenses are retained in
+_internal/assets/vendor/. No LibreHardwareMonitor GUI program is bundled.

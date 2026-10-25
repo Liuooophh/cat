@@ -85,6 +85,8 @@ def _settings_style(win):
 
 
 def _window(app, attribute, title, size):
+    if getattr(app, "quick_voice", None) is not None:
+        app.quick_voice.hide()
     existing = getattr(app, attribute, None)
     if existing is not None:
         try:
@@ -183,6 +185,23 @@ def save_ai_configuration(app, url: str, model_name: str, api_key: str, profiles
         app._legacy_key_endpoint = None
 
 
+def weather_city_name(settings):
+    location = settings.get("weather_location")
+    return str(settings.get("weather_city") or
+               (location.get("name", "") if isinstance(location, dict) else "") or "").strip()
+
+
+def weather_preference_update(settings, query, location, changed):
+    """Return only an explicitly edited weather configuration."""
+    if not changed:
+        return {}
+    if not query.strip():
+        return {"weather_city": "", "weather_location": None}
+    if location is None:
+        raise ValueError("Select a searched weather location")
+    return {"weather_city": location.name, "weather_location": location.to_dict()}
+
+
 def open_preferences(app):
     win = _window(app, "companion_window", "基础设置", (660, 780))
     if win is None:
@@ -233,6 +252,8 @@ def open_preferences(app):
                                      else "SettingsNav.TButton"))
     tabs.bind("<<NotebookTabChanged>>", update_navigation)
     update_navigation()
+    ttk.Button(navigation, text=app._t("语音"), style="SettingsNav.TButton",
+               command=app.open_speech_settings).pack(side="left", padx=(0, 8))
     scroll = ttk.Scrollbar(display, orient="vertical", style="Settings.Vertical.TScrollbar")
     scroll.pack(side="right", fill="y")
     canvas = tk.Canvas(display, bg=PAGE, highlightthickness=0, bd=0,
@@ -308,7 +329,10 @@ def open_preferences(app):
                   foreground="#9a641a").pack(fill="x", pady=6)
 
     _label(weather, app, "天气城市").pack(anchor="w", pady=(0, 5))
-    query_text = tk.StringVar(value=str(app.settings.get("weather_city", "")))
+    query_text = tk.StringVar(value=weather_city_name(app.settings))
+    # Tk widgets hold only the Tcl variable name, not its Python owner.
+    win._weather_query_var = query_text
+    weather_changed = [False]
     query = ttk.Entry(weather, textvariable=query_text, style="Settings.TEntry")
     query.pack(fill="x", ipady=5)
     _label(weather, app, "搜索后选择城市、省州和国家；留空保存可关闭天气。",
@@ -329,6 +353,7 @@ def open_preferences(app):
     if locations:
         location_box.current(0)
     def select_location(_event=None):
+        weather_changed[0] = True
         index = location_box.current()
         selected[0] = locations[index] if 0 <= index < len(locations) else None
     location_box.bind("<<ComboboxSelected>>", select_location)
@@ -341,6 +366,7 @@ def open_preferences(app):
             status.configure(text=f"{reading.city} {condition} {reading.temperature:.0f}°C\n{L('更新于')} {reading.observed_at} · Open-Meteo")
     win._language_refresh = refresh_preview
     def invalidate_location(*_args):
+        weather_changed[0] = True
         selected[0] = None
         preview[0] = None
         location_box.set("")
@@ -408,17 +434,17 @@ def open_preferences(app):
     def save():
         city = query.get().strip()
         location = selected[0]
-        if city and (location is None or location_box.current() < 0):
+        if weather_changed[0] and city and (location is None or location_box.current() < 0):
             tabs.select(weather)
             status.configure(text=L("请先搜索并选择城市"))
             return
         old_location = app.settings.get("weather_location")
         old_startup = bool(app.settings.get("start_with_windows", True))
-        new_location = location.to_dict() if city and location else None
+        update_weather = weather_preference_update(app.settings, city, location, weather_changed[0])
+        new_location = update_weather.get("weather_location", old_location)
         old_settings = dict(app.settings)
         app.settings.update({key: variable.get() for key, variable in check_vars.items()})
-        app.settings.update(weather_city=location.name if new_location else "",
-                            weather_location=new_location)
+        app.settings.update(update_weather)
         try:
             app._save_settings_file()
         except OSError as exc:
@@ -439,7 +465,7 @@ def open_preferences(app):
             app.weather_error = None
             app._weather_failures = 0
             app.next_weather_refresh = time.monotonic() + 900.0
-        else:
+        elif weather_changed[0]:
             app.next_weather_refresh = 0.0
         if getattr(sys, "frozen", False) and old_startup != check_vars["start_with_windows"].get():
             app._apply_startup(check_vars["start_with_windows"].get())

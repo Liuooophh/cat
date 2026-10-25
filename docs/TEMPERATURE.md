@@ -10,7 +10,7 @@
 - 系统需要 **.NET Framework 4.8 或更高版本**。发布包不包含系统 .NET 运行时，也不需要 .NET SDK 或单独的 .NET Core 运行时。
 - CPU 低层传感器可能需要已经安装的 PawnIO 驱动与适当访问权限；GPU 可通过现有 NVIDIA、AMD 或 Intel 驱动接口读取，是否有温度取决于硬件与驱动支持。
 
-DLL、依赖和许可证随程序发布，位于 assets/vendor/librehardwaremonitor/。本应用不包含 LibreHardwareMonitor 图形界面、PawnIO 安装器或驱动服务，不下载运行代码，不弹 UAC，也不安装、启动驱动或修改系统安全设置。
+DLL、依赖和许可证随程序发布，位于 assets/vendor/librehardwaremonitor/。桌宠运行时不包含 LibreHardwareMonitor 图形界面，不下载或安装驱动，也不自动提权或修改系统安全设置。v6.9 安装版另附官方签名的 PawnIO 安装器和微软 .NET Framework 联网安装器，仅在安装向导明确选择相应组件后运行并请求授权；直接运行版不附带这些安装器。详见 [安装说明](INSTALLATION.md)。
 
 LibreHardwareMonitorLib 0.9.6 的 PawnIO 路径只尝试用 OPEN_EXISTING 打开现有设备。缺少驱动时，管理员身份本身不能补齐驱动。用户可先运行下方普通权限诊断，查看具体结果，再自行决定是否另行准备驱动或授权运行。不要为读取温度关闭驱动阻止列表、内存完整性或其他安全功能。
 

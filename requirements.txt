@@ -4,3 +4,7 @@ pythonnet==3.0.5; sys_platform == "win32"
 clr-loader==0.2.7.post0; sys_platform == "win32"
 cffi==2.0.0; sys_platform == "win32"
 pycparser==2.22; sys_platform == "win32"
+sounddevice==0.5.6
+tencentcloud-sdk-python-common==3.1.193
+tencentcloud-sdk-python-asr==3.1.189
+tencentcloud-sdk-python-tts==3.1.101
